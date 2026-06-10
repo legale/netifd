@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <sys/wait.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -24,6 +26,49 @@
 #include "proto-ext.h"
 #include "system.h"
 #include "handler.h"
+
+static int
+proto_ext_exit_code(int ret)
+{
+	if (WIFEXITED(ret))
+		return WEXITSTATUS(ret);
+
+	if (WIFSIGNALED(ret))
+		return -WTERMSIG(ret);
+
+	return ret;
+}
+
+static const char *
+proto_ext_sm_name(enum proto_ext_sm sm)
+{
+	switch (sm) {
+	case S_IDLE:
+		return "idle";
+	case S_SETUP:
+		return "setup";
+	case S_SETUP_ABORT:
+		return "setup-abort";
+	case S_TEARDOWN:
+		return "teardown";
+	}
+
+	return "unknown";
+}
+
+static void
+proto_ext_log(struct proto_ext_state *state, int prio, const char *fmt, ...)
+{
+	char msg[256];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+
+	netifd_log_message(prio, "Interface '%s': %s\n",
+			   state->proto.iface->name, msg);
+}
 
 static void
 proto_ext_check_dependencies(struct proto_ext_state *state)
@@ -201,8 +246,13 @@ static void
 proto_ext_script_cb(struct netifd_process *p, int ret)
 {
 	struct proto_ext_state *state;
+	int code = proto_ext_exit_code(ret);
 
 	state = container_of(p, struct proto_ext_state, script_task);
+	if (code)
+		proto_ext_log(state, L_WARNING,
+			      "external proto script exited with %d in %s state",
+			      code, proto_ext_sm_name(state->sm));
 	proto_ext_task_finish(state, p);
 }
 
@@ -210,11 +260,17 @@ static void
 proto_ext_task_cb(struct netifd_process *p, int ret)
 {
 	struct proto_ext_state *state;
+	int code;
 
 	state = container_of(p, struct proto_ext_state, proto_task);
+	code = proto_ext_exit_code(ret);
+	if (code)
+		proto_ext_log(state, L_WARNING,
+			      "external proto command exited with %d in %s state",
+			      code, proto_ext_sm_name(state->sm));
 
 	if (state->sm == S_IDLE || state->sm == S_SETUP)
-		state->last_error = WEXITSTATUS(ret);
+		state->last_error = code;
 
 	proto_ext_task_finish(state, p);
 }
@@ -358,6 +414,7 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 
 	up = blobmsg_get_bool(tb[NOTIFY_LINK_UP]);
 	if (!up) {
+		proto_ext_log(state, L_NOTICE, "external proto reported link down");
 		state->proto.proto_event(&state->proto, IFPEV_LINK_LOST);
 		return 0;
 	}
@@ -385,12 +442,19 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 				dev = device_get(devname, dev_create);
 		}
 
-		if (!dev)
+		if (!dev) {
+			proto_ext_log(state, L_WARNING,
+				      "external proto link-up failed: device missing");
 			return UBUS_STATUS_INVALID_ARGUMENT;
+		}
 
 		interface_set_l3_dev(iface, dev);
-		if (device_claim(&iface->l3_dev) < 0)
+		if (device_claim(&iface->l3_dev) < 0) {
+			proto_ext_log(state, L_WARNING,
+				      "external proto link-up failed: cannot claim device '%s'",
+				      dev->ifname);
 			return UBUS_STATUS_UNKNOWN_ERROR;
+		}
 
 		device_set_present(dev, true);
 	}
@@ -425,6 +489,7 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 	if ((state->sm != S_SETUP_ABORT) && (state->sm != S_TEARDOWN)) {
 		state->proto.proto_event(&state->proto, IFPEV_UP);
 		state->sm = S_IDLE;
+		proto_ext_log(state, L_NOTICE, "external proto is up");
 	}
 
 	return 0;
@@ -599,6 +664,10 @@ proto_ext_setup_failed(struct proto_ext_state *state)
 {
 	int ret = 0;
 
+	proto_ext_log(state, L_WARNING,
+		      "external proto reported setup failure in %s state",
+		      proto_ext_sm_name(state->sm));
+
 	switch (state->sm) {
 	case S_IDLE:
 		state->proto.proto_event(&state->proto, IFPEV_LINK_LOST);
@@ -665,6 +734,9 @@ proto_ext_checkup_timeout_cb(struct uloop_timeout *timeout)
 
 	D(INTERFACE, "Interface '%s' is not up after %d sec",
 			iface->name, state->checkup_interval);
+	proto_ext_log(state, L_WARNING,
+		      "external proto setup did not finish after %d sec",
+		      state->checkup_interval);
 	state->proto.cb(proto, PROTO_CMD_TEARDOWN, false);
 }
 
@@ -780,13 +852,20 @@ proto_ext_run(struct proto_ext_state *state,
 	}
 
 	D(INTERFACE, "run %s for interface '%s'", action, proto->iface->name);
+	proto_ext_log(state, L_NOTICE, "external proto %s start", action);
 	config = blobmsg_format_json(state->config, true);
-	if (!config)
+	if (!config) {
+		proto_ext_log(state, L_WARNING,
+			      "external proto %s failed: cannot format config", action);
 		return -1;
+	}
 
 	envp[j] = NULL;
 
 	ret = start_cb(state, action, config, envp);
+	if (ret)
+		proto_ext_log(state, L_WARNING,
+			      "external proto %s failed to start: %d", action, ret);
 	free(config);
 
 	return ret;
