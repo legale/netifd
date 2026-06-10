@@ -444,14 +444,21 @@ interface_main_dev_cb(struct device_user *dep, enum device_event ev)
 		if (dep->dev && dep->dev->external && !dep->dev->sys_present)
 			interface_set_main_dev(iface, NULL);
 		break;
+	case DEV_EVENT_UPDATE_IFINDEX:
+		interface_ip_reconcile_schedule();
+		break;
 	case DEV_EVENT_UP:
 		interface_set_enabled(iface, true);
+		interface_ip_reconcile_schedule();
 		break;
 	case DEV_EVENT_DOWN:
 		interface_set_enabled(iface, false);
 		break;
 	case DEV_EVENT_AUTH_UP:
 	case DEV_EVENT_LINK_UP:
+		interface_set_link_state(iface, device_link_active(dep->dev));
+		interface_ip_reconcile_schedule();
+		break;
 	case DEV_EVENT_LINK_DOWN:
 		interface_set_link_state(iface, device_link_active(dep->dev));
 		break;
@@ -474,6 +481,12 @@ interface_l3_dev_cb(struct device_user *dep, enum device_event ev)
 		return;
 
 	switch (ev) {
+	case DEV_EVENT_UPDATE_IFINDEX:
+	case DEV_EVENT_UP:
+	case DEV_EVENT_AUTH_UP:
+	case DEV_EVENT_LINK_UP:
+		interface_ip_reconcile_schedule();
+		break;
 	case DEV_EVENT_LINK_DOWN:
 		if (iface->proto_handler->flags & PROTO_FLAG_TEARDOWN_ON_L3_LINK_DOWN)
 			interface_proto_event(iface->proto, PROTO_CMD_TEARDOWN, false);
@@ -773,6 +786,7 @@ interface_proto_event_cb(struct interface_proto_state *state, enum interface_pro
 		iface->state = IFS_UP;
 		iface->start_time = system_get_rtime();
 		interface_event(iface, IFEV_UP);
+		interface_ip_reconcile_schedule();
 		netifd_log_message(L_NOTICE, "Interface '%s' is now up\n", iface->name);
 		break;
 	case IFPEV_DOWN:

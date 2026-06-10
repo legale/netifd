@@ -2007,6 +2007,12 @@ interface_ip_retry_schedule(void)
 }
 
 void
+interface_ip_reconcile_schedule(void)
+{
+	interface_ip_retry_schedule();
+}
+
+void
 interface_ip_update_start(struct interface_ip_settings *ip)
 {
 	if (ip != &ip->iface->config_ip) {
