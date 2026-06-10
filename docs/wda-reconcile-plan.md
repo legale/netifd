@@ -55,6 +55,67 @@ Idempotent operations можно повторять:
 
 Удаление не делать периодическим на первом этапе. Сначала только восстановление missing/failed desired state. Это снижает риск снести внешний state, который netifd не должен трогать.
 
+
+## Прогресс в коде на 2026-06-10
+
+Сделаны первые две серии hardening patches.
+
+IP state reconcile:
+
+- `00e5aa5 interface-ip: make IP apply failures explicit`;
+- `d588bba interface-ip: retry enabled failed routes`;
+- `fcf32a9 interface-ip: retry failed IP state`;
+- `46095e9 interface-ip: schedule reconcile after device events`.
+
+Фактически добавлено:
+
+- единое правило `failed=true/false` для add address/route/neighbor;
+- retry для `enabled && failed` routes, addresses, neighbors;
+- retry для `host_routes`;
+- global `ip_retry_timeout` в `interface-ip.c`;
+- backoff 1s -> 2s -> 4s -> 8s -> 16s -> 30s max;
+- порядок retry: address -> route -> neighbor;
+- skip apply, если interface не `IFS_UP/IFS_SETUP`;
+- skip apply, если нет `l3_dev`, device не present или ifindex invalid;
+- schedule retry после `DEV_EVENT_UPDATE_IFINDEX`, `DEV_EVENT_UP`, `DEV_EVENT_AUTH_UP`, `DEV_EVENT_LINK_UP`, `IFPEV_UP`.
+
+Эта серия закрывает класс ошибок: interface уже поднят, но IP address/route/neighbor не применился из-за transient ordering/device/link race. Теперь такая ошибка не должна оставаться permanent до reload.
+
+External proto reconcile:
+
+- `5c07422 proto-ext: log external proto setup failures`;
+- `b39a40f proto-ext: retry failed external proto setup`;
+- `cb755ea proto-ext: retry unresolved host dependencies`.
+
+Фактически добавлено:
+
+- явные логи external proto setup/teardown lifecycle;
+- логи script exit/proto command exit;
+- логи setup_failed notify/checkup timeout;
+- логи link-up failure для missing device и device claim failure;
+- per-proto `setup_retry_timeout`;
+- per-proto `host_dep_retry_timeout`;
+- backoff 1s -> 2s -> 4s -> 8s -> 16s -> 30s max;
+- setup retry для script failed, proto command failed, link-up device missing, device claim failed, external setup failed, setup checkup timeout, setup start failed;
+- reset retry после успешного external proto up;
+- retry unresolved host dependencies, актуально для WireGuard `endpoint_host`.
+
+Эта серия закрывает более ранний симптом с `wg1`, когда полностью корректный WireGuard config иногда не доходил до рабочего состояния. Если причина была transient setup/device/host dependency race, теперь netifd должен повторить setup или dependency lookup сам. Если причина постоянная, например нет wireguard module/tool или битый config, будет bounded retry с понятными логами.
+
+Что уже неактуально в старом плане:
+
+- Commit 3, 4, 5, 6, 7, 8 из плана фактически покрыты текущими IP-state patches, хотя нумерация коммитов в git другая.
+- Дополнительный отдельный IFPEV_UP reapply уже покрыт через `interface_ip_retry_schedule()` после `IFPEV_UP`.
+- Для WireGuard-like проблем добавлена отдельная proto-ext серия, которой в первом плане ещё не было.
+
+Что ещё не сделано:
+
+- current-state verification через netlink dump;
+- reconcile missing state, если kernel state был успешно применён, а потом удалён внешним компонентом;
+- counters в ubus/status/debug;
+- унификация diagnostics для bridge/bonding/vrf retry;
+- host-side build в этом окружении, потому что нет OpenWrt deps `libubox`, `ubus`, `uci`, `ucode`, `udebug`, `blobmsg_json`.
+
 ## Правила безопасности
 
 1. Reconcile не должен вызывать proto setup/teardown.
@@ -403,29 +464,29 @@ Backoff:
 
 ## Минимальный acceptance
 
-Серия считается полезной, если:
+Статус на 2026-06-10:
 
-- route/address/neighbor add failure больше не становится permanent без reload;
-- повторный apply происходит сам после device/link/proto-up событий;
-- retry bounded и не спамит лог;
-- existing OpenWrt interfaces не меняются;
-- build проходит;
-- netifd сохраняет старые scripts/ubus/proto contracts;
-- wda не линкует netrec.
+- route/address/neighbor add failure больше не должен становиться permanent без reload - сделано;
+- повторный apply после device/link/proto-up событий - сделано;
+- retry bounded/backoff - сделано;
+- external proto setup retry для WireGuard-like failures - сделано;
+- host dependency retry для endpoint_host - сделано;
+- existing OpenWrt UCI/ubus/scripts/proto contracts не менялись;
+- wda не линкует netrec;
+- build в текущем контейнере не подтверждён из-за отсутствующих OpenWrt deps.
 
-## Практический порядок работ
+## Практический порядок работ дальше
 
-Сначала diagnostics + failed flag consistency.
+Сделанный слой не превращать в большой state engine.
 
-Потом route retry.
+Следующие безопасные шаги:
 
-Потом addr/neighbor retry.
-
-Потом triggers от events.
-
-Потом logs/counters.
-
-Только после этого думать о current-state verification через netlink dump.
+1. Собрать в OpenWrt SDK и проверить runtime на AP.
+2. Проверить `wg1` сценарий: `ifstatus wg1`, `ip link show wg1`, `ip addr show dev wg1`, `ip route show table all`.
+3. По логам понять, какой path реально лечит проблему: proto setup retry, host dependency retry или IP-state retry.
+4. Добавить только недостающие diagnostics, если логов недостаточно.
+5. Потом можно думать о counters/status-debug.
+6. Current-state verification через netlink dump делать только после живого подтверждения, что add-retry недостаточен.
 
 ## Риски
 
