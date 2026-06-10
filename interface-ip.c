@@ -94,6 +94,13 @@ const struct uci_blob_param_list neighbor_attr_list = {
 struct list_head prefixes = LIST_HEAD_INIT(prefixes);
 static struct device_prefix *ula_prefix = NULL;
 static struct uloop_timeout valid_until_timeout;
+static struct uloop_timeout ip_retry_timeout;
+static unsigned int ip_retry_delay_ms = 1000;
+
+#define IP_RETRY_MIN_MS		1000
+#define IP_RETRY_MAX_MS		30000
+
+static void interface_ip_retry_schedule(void);
 
 static const char *
 interface_ip_af_name(enum device_addr_flags flags)
@@ -144,6 +151,8 @@ interface_ip_add_addr(struct interface_ip_settings *ip, struct device *dev,
 	ret = system_add_address(dev, addr);
 	interface_ip_log_apply(ip->iface, dev, "address", addr->flags, ret);
 	addr->failed = !!ret;
+	if (addr->failed)
+		interface_ip_retry_schedule();
 	if (was_failed && !addr->failed)
 		interface_ip_log_recovered(ip->iface, dev, "address", addr->flags);
 
@@ -160,6 +169,8 @@ interface_ip_add_route(struct interface_ip_settings *ip, struct device *dev,
 	ret = system_add_route(dev, route);
 	interface_ip_log_apply(ip->iface, dev, "route", route->flags, ret);
 	route->failed = !!ret;
+	if (route->failed)
+		interface_ip_retry_schedule();
 	if (was_failed && !route->failed)
 		interface_ip_log_recovered(ip->iface, dev, "route", route->flags);
 
@@ -176,6 +187,8 @@ interface_ip_add_neighbor(struct interface_ip_settings *ip, struct device *dev,
 	ret = system_add_neighbor(dev, neighbor);
 	interface_ip_log_apply(ip->iface, dev, "neighbor", neighbor->flags, ret);
 	neighbor->failed = !!ret;
+	if (neighbor->failed)
+		interface_ip_retry_schedule();
 	if (was_failed && !neighbor->failed)
 		interface_ip_log_recovered(ip->iface, dev, "neighbor", neighbor->flags);
 
@@ -1848,6 +1861,151 @@ void interface_ip_set_enabled(struct interface_ip_settings *ip, bool enabled)
 	}
 }
 
+static bool
+interface_ip_has_failed(struct interface_ip_settings *ip)
+{
+	struct device_neighbor *neighbor;
+	struct device_route *route;
+	struct device_addr *addr;
+
+	vlist_for_each_element(&ip->addr, addr, node)
+		if (addr->enabled && addr->failed && !(addr->flags & DEVADDR_EXTERNAL))
+			return true;
+
+	vlist_for_each_element(&ip->route, route, node)
+		if (route->enabled && route->failed && !(route->flags & DEVADDR_EXTERNAL))
+			return true;
+
+	vlist_for_each_element(&ip->neighbor, neighbor, node)
+		if (neighbor->enabled && neighbor->failed)
+			return true;
+
+	return false;
+}
+
+static bool
+interface_ip_retry_host_routes(struct interface *iface, struct device *dev)
+{
+	struct device_route *route;
+	bool failed = false;
+
+	vlist_for_each_element(&iface->host_routes, route, node) {
+		if (!route->enabled || !route->failed)
+			continue;
+
+		if (route->flags & DEVADDR_EXTERNAL)
+			continue;
+
+		interface_set_route_info(iface, route);
+		interface_ip_add_route(&iface->proto_ip, dev, route);
+		failed |= route->failed;
+	}
+
+	return failed;
+}
+
+static bool
+interface_ip_has_failed_host_routes(struct interface *iface)
+{
+	struct device_route *route;
+
+	vlist_for_each_element(&iface->host_routes, route, node)
+		if (route->enabled && route->failed && !(route->flags & DEVADDR_EXTERNAL))
+			return true;
+
+	return false;
+}
+
+static bool
+interface_ip_retry_settings(struct interface_ip_settings *ip, struct device *dev)
+{
+	struct device_neighbor *neighbor;
+	struct device_route *route;
+	struct device_addr *addr;
+	bool failed = false;
+
+	vlist_for_each_element(&ip->addr, addr, node) {
+		if (!addr->enabled || !addr->failed)
+			continue;
+
+		if (addr->flags & DEVADDR_EXTERNAL)
+			continue;
+
+		interface_ip_add_addr(ip, dev, addr);
+		failed |= addr->failed;
+	}
+
+	vlist_for_each_element(&ip->route, route, node) {
+		if (!route->enabled || !route->failed)
+			continue;
+
+		if (route->flags & DEVADDR_EXTERNAL)
+			continue;
+
+		interface_set_route_info(ip->iface, route);
+		interface_ip_add_route(ip, dev, route);
+		failed |= route->failed;
+	}
+
+	vlist_for_each_element(&ip->neighbor, neighbor, node) {
+		if (!neighbor->enabled || !neighbor->failed)
+			continue;
+
+		interface_ip_add_neighbor(ip, dev, neighbor);
+		failed |= neighbor->failed;
+	}
+
+	return failed;
+}
+
+static bool
+interface_ip_retry_iface(struct interface *iface)
+{
+	struct device *dev = iface->l3_dev.dev;
+
+	if (iface->state != IFS_UP && iface->state != IFS_SETUP)
+		return false;
+
+	if (!dev || !dev->present || dev->ifindex <= 0)
+		return interface_ip_has_failed(&iface->config_ip) ||
+		       interface_ip_has_failed(&iface->proto_ip) ||
+		       interface_ip_has_failed_host_routes(iface);
+
+	return interface_ip_retry_settings(&iface->config_ip, dev) |
+	       interface_ip_retry_settings(&iface->proto_ip, dev) |
+	       interface_ip_retry_host_routes(iface, dev);
+}
+
+static void
+interface_ip_retry_cb(struct uloop_timeout *t)
+{
+	struct interface *iface;
+	bool failed = false;
+
+	vlist_for_each_element(&interfaces, iface, node)
+		failed |= interface_ip_retry_iface(iface);
+
+	if (!failed) {
+		ip_retry_delay_ms = IP_RETRY_MIN_MS;
+		return;
+	}
+
+	uloop_timeout_set(t, ip_retry_delay_ms);
+	if (ip_retry_delay_ms < IP_RETRY_MAX_MS)
+		ip_retry_delay_ms *= 2;
+	if (ip_retry_delay_ms > IP_RETRY_MAX_MS)
+		ip_retry_delay_ms = IP_RETRY_MAX_MS;
+}
+
+static void
+interface_ip_retry_schedule(void)
+{
+	if (ip_retry_timeout.pending)
+		return;
+
+	uloop_timeout_set(&ip_retry_timeout, ip_retry_delay_ms);
+}
+
 void
 interface_ip_update_start(struct interface_ip_settings *ip)
 {
@@ -1941,5 +2099,6 @@ static void __init
 interface_ip_init_worker(void)
 {
 	valid_until_timeout.cb = interface_ip_valid_until_handler;
+	ip_retry_timeout.cb = interface_ip_retry_cb;
 	uloop_timeout_set(&valid_until_timeout, 1000);
 }
