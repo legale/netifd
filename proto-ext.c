@@ -27,6 +27,9 @@
 #include "system.h"
 #include "handler.h"
 
+#define PROTO_EXT_RETRY_MIN_MS	1000
+#define PROTO_EXT_RETRY_MAX_MS	30000
+
 static int
 proto_ext_exit_code(int ret)
 {
@@ -68,6 +71,80 @@ proto_ext_log(struct proto_ext_state *state, int prio, const char *fmt, ...)
 
 	netifd_log_message(prio, "Interface '%s': %s\n",
 			   state->proto.iface->name, msg);
+}
+
+static void
+proto_ext_setup_retry_reset(struct proto_ext_state *state)
+{
+	uloop_timeout_cancel(&state->setup_retry_timeout);
+	state->setup_retry_delay_ms = PROTO_EXT_RETRY_MIN_MS;
+}
+
+static bool
+proto_ext_setup_retry_allowed(struct proto_ext_state *state)
+{
+	struct interface *iface = state->proto.iface;
+
+	return iface->autostart && iface->enabled && iface->available;
+}
+
+static void
+proto_ext_setup_retry_schedule(struct proto_ext_state *state, const char *reason)
+{
+	unsigned int delay;
+
+	if (!proto_ext_setup_retry_allowed(state))
+		return;
+
+	if (state->setup_retry_timeout.pending)
+		return;
+
+	delay = state->setup_retry_delay_ms;
+	if (!delay)
+		delay = PROTO_EXT_RETRY_MIN_MS;
+
+	proto_ext_log(state, L_NOTICE,
+		      "schedule external proto setup retry in %u ms: %s",
+		      delay, reason);
+	uloop_timeout_set(&state->setup_retry_timeout, delay);
+
+	delay *= 2;
+	if (delay > PROTO_EXT_RETRY_MAX_MS)
+		delay = PROTO_EXT_RETRY_MAX_MS;
+	state->setup_retry_delay_ms = delay;
+}
+
+static void
+proto_ext_setup_retry_fail(struct proto_ext_state *state, const char *reason)
+{
+	proto_ext_setup_retry_schedule(state, reason);
+
+	if (state->sm == S_IDLE || state->sm == S_SETUP)
+		state->proto.cb(&state->proto, PROTO_CMD_TEARDOWN, false);
+}
+
+static void
+proto_ext_setup_retry_cb(struct uloop_timeout *timeout)
+{
+	struct proto_ext_state *state;
+	struct interface *iface;
+
+	state = container_of(timeout, struct proto_ext_state, setup_retry_timeout);
+	iface = state->proto.iface;
+
+	if (!proto_ext_setup_retry_allowed(state))
+		return;
+
+	if (iface->state == IFS_UP)
+		return;
+
+	if (iface->state != IFS_DOWN || state->sm != S_IDLE) {
+		proto_ext_setup_retry_schedule(state, "previous setup is still stopping");
+		return;
+	}
+
+	proto_ext_log(state, L_NOTICE, "retry external proto setup");
+	interface_set_up(iface);
 }
 
 static void
@@ -253,6 +330,8 @@ proto_ext_script_cb(struct netifd_process *p, int ret)
 		proto_ext_log(state, L_WARNING,
 			      "external proto script exited with %d in %s state",
 			      code, proto_ext_sm_name(state->sm));
+	if (code && state->sm == S_SETUP)
+		proto_ext_setup_retry_schedule(state, "setup script failed");
 	proto_ext_task_finish(state, p);
 }
 
@@ -268,6 +347,8 @@ proto_ext_task_cb(struct netifd_process *p, int ret)
 		proto_ext_log(state, L_WARNING,
 			      "external proto command exited with %d in %s state",
 			      code, proto_ext_sm_name(state->sm));
+	if (code && (state->sm == S_IDLE || state->sm == S_SETUP))
+		proto_ext_setup_retry_schedule(state, "proto command failed");
 
 	if (state->sm == S_IDLE || state->sm == S_SETUP)
 		state->last_error = code;
@@ -283,6 +364,7 @@ proto_ext_free(struct interface_proto_state *proto)
 	state = container_of(proto, struct proto_ext_state, proto);
 	uloop_timeout_cancel(&state->teardown_timeout);
 	uloop_timeout_cancel(&state->checkup_timeout);
+	uloop_timeout_cancel(&state->setup_retry_timeout);
 	proto_ext_clear_host_dep(state);
 	netifd_kill_process(&state->script_task);
 	netifd_kill_process(&state->proto_task);
@@ -445,6 +527,7 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 		if (!dev) {
 			proto_ext_log(state, L_WARNING,
 				      "external proto link-up failed: device missing");
+			proto_ext_setup_retry_fail(state, "link-up device missing");
 			return UBUS_STATUS_INVALID_ARGUMENT;
 		}
 
@@ -453,6 +536,7 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 			proto_ext_log(state, L_WARNING,
 				      "external proto link-up failed: cannot claim device '%s'",
 				      dev->ifname);
+			proto_ext_setup_retry_fail(state, "link-up device claim failed");
 			return UBUS_STATUS_UNKNOWN_ERROR;
 		}
 
@@ -489,6 +573,7 @@ proto_ext_update_link(struct proto_ext_state *state, struct blob_attr *data, str
 	if ((state->sm != S_SETUP_ABORT) && (state->sm != S_TEARDOWN)) {
 		state->proto.proto_event(&state->proto, IFPEV_UP);
 		state->sm = S_IDLE;
+		proto_ext_setup_retry_reset(state);
 		proto_ext_log(state, L_NOTICE, "external proto is up");
 	}
 
@@ -673,6 +758,7 @@ proto_ext_setup_failed(struct proto_ext_state *state)
 		state->proto.proto_event(&state->proto, IFPEV_LINK_LOST);
 		fallthrough;
 	case S_SETUP:
+		proto_ext_setup_retry_schedule(state, "external setup failed");
 		state->proto.cb(&state->proto, PROTO_CMD_TEARDOWN, false);
 		break;
 	case S_SETUP_ABORT:
@@ -723,8 +809,7 @@ proto_ext_checkup_timeout_cb(struct uloop_timeout *timeout)
 {
 	struct proto_ext_state *state = container_of(timeout, struct
 			proto_ext_state, checkup_timeout);
-	struct interface_proto_state *proto = &state->proto;
-	struct interface *iface = proto->iface;
+	struct interface *iface = state->proto.iface;
 
 	if (!iface->autostart)
 		return;
@@ -737,7 +822,7 @@ proto_ext_checkup_timeout_cb(struct uloop_timeout *timeout)
 	proto_ext_log(state, L_WARNING,
 		      "external proto setup did not finish after %d sec",
 		      state->checkup_interval);
-	state->proto.cb(proto, PROTO_CMD_TEARDOWN, false);
+	proto_ext_setup_retry_fail(state, "setup checkup timeout");
 }
 
 static void
@@ -776,6 +861,8 @@ proto_ext_state_init(struct proto_ext_state *state,
 	state->proto.free = proto_ext_free;
 	state->proto.notify = proto_ext_notify;
 	state->teardown_timeout.cb = proto_ext_teardown_timeout_cb;
+	state->setup_retry_timeout.cb = proto_ext_setup_retry_cb;
+	state->setup_retry_delay_ms = PROTO_EXT_RETRY_MIN_MS;
 	state->script_task.cb = proto_ext_script_cb;
 	state->script_task.dir_fd = dir_fd;
 	state->script_task.log_prefix = iface->name;
@@ -866,6 +953,8 @@ proto_ext_run(struct proto_ext_state *state,
 	if (ret)
 		proto_ext_log(state, L_WARNING,
 			      "external proto %s failed to start: %d", action, ret);
+	if (ret && cmd == PROTO_CMD_SETUP)
+		proto_ext_setup_retry_schedule(state, "setup start failed");
 	free(config);
 
 	return ret;
