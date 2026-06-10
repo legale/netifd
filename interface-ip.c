@@ -122,15 +122,30 @@ interface_ip_log_apply(const struct interface *iface, const struct device *dev,
 			   interface_ip_af_name(flags), ret);
 }
 
+static void
+interface_ip_log_recovered(const struct interface *iface, const struct device *dev,
+			   const char *op, enum device_addr_flags flags)
+{
+	const char *ifname = iface ? iface->name : "none";
+
+	netifd_log_message(L_NOTICE,
+			   "Interface '%s': recovered %s on %s (%s)\n",
+			   ifname, op, interface_ip_dev_name(dev),
+			   interface_ip_af_name(flags));
+}
+
 static int
 interface_ip_add_addr(struct interface_ip_settings *ip, struct device *dev,
 		      struct device_addr *addr)
 {
+	bool was_failed = addr->failed;
 	int ret;
 
-	ret = interface_ip_add_addr(ip, dev, addr);
+	ret = system_add_address(dev, addr);
 	interface_ip_log_apply(ip->iface, dev, "address", addr->flags, ret);
 	addr->failed = !!ret;
+	if (was_failed && !addr->failed)
+		interface_ip_log_recovered(ip->iface, dev, "address", addr->flags);
 
 	return ret;
 }
@@ -139,11 +154,14 @@ static int
 interface_ip_add_route(struct interface_ip_settings *ip, struct device *dev,
 		       struct device_route *route)
 {
+	bool was_failed = route->failed;
 	int ret;
 
 	ret = system_add_route(dev, route);
 	interface_ip_log_apply(ip->iface, dev, "route", route->flags, ret);
 	route->failed = !!ret;
+	if (was_failed && !route->failed)
+		interface_ip_log_recovered(ip->iface, dev, "route", route->flags);
 
 	return ret;
 }
@@ -152,11 +170,14 @@ static int
 interface_ip_add_neighbor(struct interface_ip_settings *ip, struct device *dev,
 			  struct device_neighbor *neighbor)
 {
+	bool was_failed = neighbor->failed;
 	int ret;
 
 	ret = system_add_neighbor(dev, neighbor);
 	interface_ip_log_apply(ip->iface, dev, "neighbor", neighbor->flags, ret);
 	neighbor->failed = !!ret;
+	if (was_failed && !neighbor->failed)
+		interface_ip_log_recovered(ip->iface, dev, "neighbor", neighbor->flags);
 
 	return ret;
 }
@@ -1701,7 +1722,7 @@ interface_ip_set_route_enabled(struct interface_ip_settings *ip,
 	if (!enable_route(ip, route))
 		enabled = false;
 
-	if (route->enabled == enabled)
+	if (route->enabled == enabled && (!enabled || !route->failed))
 		return;
 
 	if (enabled) {
