@@ -147,6 +147,9 @@ proto_ext_setup_retry_cb(struct uloop_timeout *timeout)
 	interface_set_up(iface);
 }
 
+static void proto_ext_host_dep_retry_reset(struct proto_ext_state *state);
+static void proto_ext_host_dep_retry_schedule(struct proto_ext_dep *dep);
+
 static void
 proto_ext_check_dependencies(struct proto_ext_state *state)
 {
@@ -160,6 +163,9 @@ proto_ext_check_dependencies(struct proto_ext_state *state)
 		available = false;
 		break;
 	}
+
+	if (available)
+		proto_ext_host_dep_retry_reset(state);
 
 	interface_set_available(state->proto.iface, available);
 }
@@ -197,13 +203,87 @@ proto_ext_update_host_dep(struct proto_ext_dep *dep)
 	interface_add_user(&dep->dep, iface);
 
 out:
+	if (!dep->dep.iface)
+		proto_ext_host_dep_retry_schedule(dep);
 	proto_ext_check_dependencies(dep->proto);
+}
+
+static const char *
+proto_ext_host_dep_addr(struct proto_ext_dep *dep, char *buf, size_t len)
+{
+	if (dep->any)
+		return "any";
+
+	if (inet_ntop(dep->v6 ? AF_INET6 : AF_INET,
+		      dep->v6 ? (void *)&dep->host.in6 : (void *)&dep->host.in,
+		      buf, len))
+		return buf;
+
+	return "unknown";
+}
+
+static void
+proto_ext_host_dep_retry_reset(struct proto_ext_state *state)
+{
+	uloop_timeout_cancel(&state->host_dep_retry_timeout);
+	state->host_dep_retry_delay_ms = PROTO_EXT_RETRY_MIN_MS;
+}
+
+static void
+proto_ext_host_dep_retry_schedule(struct proto_ext_dep *dep)
+{
+	struct proto_ext_state *state = dep->proto;
+	char host[INET6_ADDRSTRLEN];
+	unsigned int delay;
+
+	if (!state->proto.iface->autostart || !state->proto.iface->enabled)
+		return;
+
+	if (state->host_dep_retry_timeout.pending)
+		return;
+
+	delay = state->host_dep_retry_delay_ms;
+	if (!delay)
+		delay = PROTO_EXT_RETRY_MIN_MS;
+
+	proto_ext_log(state, L_NOTICE,
+		      "schedule host dependency retry in %u ms: host=%s iface=%s",
+		      delay, proto_ext_host_dep_addr(dep, host, sizeof(host)),
+		      dep->interface[0] ? dep->interface : "any");
+	uloop_timeout_set(&state->host_dep_retry_timeout, delay);
+
+	delay *= 2;
+	if (delay > PROTO_EXT_RETRY_MAX_MS)
+		delay = PROTO_EXT_RETRY_MAX_MS;
+	state->host_dep_retry_delay_ms = delay;
+}
+
+static void
+proto_ext_host_dep_retry_cb(struct uloop_timeout *timeout)
+{
+	struct proto_ext_state *state;
+	struct proto_ext_dep *dep;
+
+	state = container_of(timeout, struct proto_ext_state,
+			     host_dep_retry_timeout);
+
+	if (!state->proto.iface->autostart || !state->proto.iface->enabled)
+		return;
+
+	list_for_each_entry(dep, &state->deps, list) {
+		if (dep->dep.iface)
+			continue;
+
+		proto_ext_update_host_dep(dep);
+	}
 }
 
 static void
 proto_ext_clear_host_dep(struct proto_ext_state *state)
 {
 	struct proto_ext_dep *dep, *tmp;
+
+	proto_ext_host_dep_retry_reset(state);
 
 	list_for_each_entry_safe(dep, tmp, &state->deps, list) {
 		interface_remove_user(&dep->dep);
@@ -862,7 +942,9 @@ proto_ext_state_init(struct proto_ext_state *state,
 	state->proto.notify = proto_ext_notify;
 	state->teardown_timeout.cb = proto_ext_teardown_timeout_cb;
 	state->setup_retry_timeout.cb = proto_ext_setup_retry_cb;
+	state->host_dep_retry_timeout.cb = proto_ext_host_dep_retry_cb;
 	state->setup_retry_delay_ms = PROTO_EXT_RETRY_MIN_MS;
+	state->host_dep_retry_delay_ms = PROTO_EXT_RETRY_MIN_MS;
 	state->script_task.cb = proto_ext_script_cb;
 	state->script_task.dir_fd = dir_fd;
 	state->script_task.log_prefix = iface->name;

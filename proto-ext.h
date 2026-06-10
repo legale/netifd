@@ -35,7 +35,9 @@ struct proto_ext_state {
 	int checkup_interval;
 	struct uloop_timeout checkup_timeout;
 	struct uloop_timeout setup_retry_timeout;
+	struct uloop_timeout host_dep_retry_timeout;
 	unsigned int setup_retry_delay_ms;
+	unsigned int host_dep_retry_delay_ms;
 
 	struct netifd_process script_task;
 	struct netifd_process proto_task;
