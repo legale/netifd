@@ -95,6 +95,72 @@ struct list_head prefixes = LIST_HEAD_INIT(prefixes);
 static struct device_prefix *ula_prefix = NULL;
 static struct uloop_timeout valid_until_timeout;
 
+static const char *
+interface_ip_af_name(enum device_addr_flags flags)
+{
+	return ((flags & DEVADDR_FAMILY) == DEVADDR_INET6) ? "inet6" : "inet";
+}
+
+static const char *
+interface_ip_dev_name(const struct device *dev)
+{
+	return dev ? dev->ifname : "none";
+}
+
+static void
+interface_ip_log_apply(const struct interface *iface, const struct device *dev,
+			       const char *op, enum device_addr_flags flags, int ret)
+{
+	const char *ifname = iface ? iface->name : "none";
+
+	if (!ret)
+		return;
+
+	netifd_log_message(L_WARNING,
+			   "Interface '%s': failed to apply %s on %s (%s): %d\n",
+			   ifname, op, interface_ip_dev_name(dev),
+			   interface_ip_af_name(flags), ret);
+}
+
+static int
+interface_ip_add_addr(struct interface_ip_settings *ip, struct device *dev,
+		      struct device_addr *addr)
+{
+	int ret;
+
+	ret = interface_ip_add_addr(ip, dev, addr);
+	interface_ip_log_apply(ip->iface, dev, "address", addr->flags, ret);
+	addr->failed = !!ret;
+
+	return ret;
+}
+
+static int
+interface_ip_add_route(struct interface_ip_settings *ip, struct device *dev,
+		       struct device_route *route)
+{
+	int ret;
+
+	ret = system_add_route(dev, route);
+	interface_ip_log_apply(ip->iface, dev, "route", route->flags, ret);
+	route->failed = !!ret;
+
+	return ret;
+}
+
+static int
+interface_ip_add_neighbor(struct interface_ip_settings *ip, struct device *dev,
+			  struct device_neighbor *neighbor)
+{
+	int ret;
+
+	ret = system_add_neighbor(dev, neighbor);
+	interface_ip_log_apply(ip->iface, dev, "neighbor", neighbor->flags, ret);
+	neighbor->failed = !!ret;
+
+	return ret;
+}
+
 
 static void
 clear_if_addr(union if_addr *a, int mask)
@@ -745,8 +811,7 @@ interface_update_proto_addr(struct vlist_tree *tree,
 
 		if (!keep || replace) {
 			if (!(a_new->flags & DEVADDR_EXTERNAL)) {
-				if (system_add_address(dev, a_new))
-					a_new->failed = true;
+				interface_ip_add_addr(ip, dev, a_new);
 
 				if (iface->metric || a_new->policy_table)
 					interface_handle_subnet_route(iface, a_new, true);
@@ -820,8 +885,7 @@ interface_update_proto_neighbor(struct vlist_tree *tree,
 
 	if (node_new) {
 		if (!keep && ip->enabled)
-			if (system_add_neighbor(dev, neighbor_new))
-				neighbor_new->failed = true;
+			interface_ip_add_neighbor(ip, dev, neighbor_new);
 
 		neighbor_new->enabled = ip->enabled;
 	}
@@ -861,8 +925,7 @@ __interface_update_route(struct interface_ip_settings *ip,
 		bool _enabled = enable_route(ip, route_new);
 
 		if (!(route_new->flags & DEVADDR_EXTERNAL) && !keep && _enabled)
-			if (system_add_route(dev, route_new))
-				route_new->failed = true;
+			interface_ip_add_route(ip, dev, route_new);
 
 		route_new->iface = iface;
 		route_new->enabled = _enabled;
@@ -1644,8 +1707,7 @@ interface_ip_set_route_enabled(struct interface_ip_settings *ip,
 	if (enabled) {
 		interface_set_route_info(ip->iface, route);
 
-		if (system_add_route(dev, route))
-			route->failed = true;
+		interface_ip_add_route(ip, dev, route);
 	} else
 		system_del_route(dev, route);
 
@@ -1676,7 +1738,7 @@ void interface_ip_set_enabled(struct interface_ip_settings *ip, bool enabled)
 			continue;
 
 		if (enabled) {
-			system_add_address(dev, addr);
+			interface_ip_add_addr(ip, dev, addr);
 
 			addr->policy_table = (v6) ? iface->ip6table : iface->ip4table;
 			if (iface->metric || addr->policy_table)
@@ -1738,8 +1800,7 @@ void interface_ip_set_enabled(struct interface_ip_settings *ip, bool enabled)
 			continue;
 
 		if (enabled) {
-			if(system_add_neighbor(dev, neighbor))
-				neighbor->failed = true;
+			interface_ip_add_neighbor(ip, dev, neighbor);
 		} else
 			system_del_neighbor(dev, neighbor);
 
