@@ -363,6 +363,55 @@ cmake -DRECONCILE_ACTIONS=OFF -DRECONCILE_SETUP_RESTART=OFF -DRECONCILE_WIRELESS
 
 Full `wpad` restart is still not a netifd action.
 
+## Stage 6: production visibility
+
+Status: completed.
+
+The reconciler now exposes runtime counters in:
+
+```sh
+ubus call network reconcile_status
+```
+
+The status output includes:
+
+- total reconcile runs;
+- total reconcile events;
+- total recovery actions;
+- ifup/restart/restart-failed counters;
+- suppress/blocked/confirm counters;
+- wireless check count;
+- wireless recovery event counters;
+- last wireless radio/action/reason/section/ifname/count.
+
+Wireless ucode can report recovery events to C through:
+
+```ucode
+netifd.reconcile_event({
+	radio: wdev.name,
+	action: "teardown_setup",
+	reason: "missing_kernel_ifname",
+	section: missing.section,
+	ifname: missing.ifname,
+	count: wdev.recover_fail_cnt,
+});
+```
+
+This keeps logread useful, but makes post-test diagnosis possible without
+parsing logs.
+
+## Hardware test result
+
+The first real hardware recovery test passed. The tested failure injection was
+removing both interfaces from hostapd config:
+
+```sh
+j='{"iface":"cwlan1_60"}'; ssh root@10.11.11.100 "ubus call hostapd config_remove '$j'"
+j='{"iface":"cwlan0_60"}'; ssh root@10.11.11.100 "ubus call hostapd config_remove '$j'"
+```
+
+Expected and observed result: reconcile recovered the missing wireless runtime
+state without running `service wpad restart`.
 
 ## Stage 8: deployment boundary and live wireless ucode patch
 
@@ -538,53 +587,3 @@ reconcile: wireless=radio0 action=none reason=recover_confirm age=0 section=wifi
 
 The test is successful if a missed wifi interface is recreated without running
 `service wpad restart` and without repeated recovery loops.
-
-## Stage 6: production visibility
-
-Status: completed.
-
-The reconciler now exposes runtime counters in:
-
-```sh
-ubus call network reconcile_status
-```
-
-The status output includes:
-
-- total reconcile runs;
-- total reconcile events;
-- total recovery actions;
-- ifup/restart/restart-failed counters;
-- suppress/blocked/confirm counters;
-- wireless check count;
-- wireless recovery event counters;
-- last wireless radio/action/reason/section/ifname/count.
-
-Wireless ucode can report recovery events to C through:
-
-```ucode
-netifd.reconcile_event({
-	radio: wdev.name,
-	action: "teardown_setup",
-	reason: "missing_kernel_ifname",
-	section: missing.section,
-	ifname: missing.ifname,
-	count: wdev.recover_fail_cnt,
-});
-```
-
-This keeps logread useful, but makes post-test diagnosis possible without
-parsing logs.
-
-## Hardware test result
-
-The first real hardware recovery test passed. The tested failure injection was
-removing both interfaces from hostapd config:
-
-```sh
-j='{"iface":"cwlan1_60"}'; ssh root@10.11.11.100 "ubus call hostapd config_remove '$j'"
-j='{"iface":"cwlan0_60"}'; ssh root@10.11.11.100 "ubus call hostapd config_remove '$j'"
-```
-
-Expected and observed result: reconcile recovered the missing wireless runtime
-state without running `service wpad restart`.
