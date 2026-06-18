@@ -27,6 +27,7 @@
 #include "proto.h"
 #include "extdev.h"
 #include "ucode.h"
+#include "reconcile.h"
 
 unsigned int debug_mask = 0;
 const char *main_path = DEFAULT_MAIN_PATH;
@@ -405,6 +406,7 @@ int main(int argc, char **argv)
 	}
 
 	config_init_all();
+	reconcile_init();
 
 	uloop_run();
 	netifd_kill_processes();
