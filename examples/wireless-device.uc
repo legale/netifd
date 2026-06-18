@@ -15,6 +15,7 @@ const RECOVER_BACKOFF = 15;
 const RECOVER_SUPPRESS = 60;
 const RECOVER_FAIL_LIMIT = 3;
 const RECOVER_GRACE = 5;
+const RECOVER_CONFIRM = 3;
 
 let wdev_cur;
 let wdev_handler = {};
@@ -305,6 +306,7 @@ function wdev_recover_reset(wdev)
 	delete wdev.recover_last;
 	delete wdev.recover_fail_cnt;
 	delete wdev.recover_suppress_until;
+	delete wdev.recover_pending;
 }
 
 function wdev_missing_data(wdev, key, section)
@@ -416,6 +418,35 @@ function wdev_recover_in_grace(wdev)
 	return true;
 }
 
+function wdev_recover_confirmed(wdev, missing)
+{
+	let now = time();
+	let pending = wdev.recover_pending;
+
+	if (pending && pending.section == missing.section &&
+	    pending.ifname == missing.ifname && pending.reason == missing.reason) {
+		if (now >= pending.since + RECOVER_CONFIRM)
+			return true;
+
+		netifd.log(netifd.L_NOTICE,
+			`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=${now - pending.since} section=${missing.section} ifname=${missing.ifname}
+`);
+		return false;
+	}
+
+	wdev.recover_pending = {
+		section: missing.section,
+		ifname: missing.ifname,
+		reason: missing.reason,
+		since: now,
+	};
+
+	netifd.log(netifd.L_NOTICE,
+		`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=0 section=${missing.section} ifname=${missing.ifname}
+`);
+	return false;
+}
+
 function wdev_recover_missing_interfaces(wdev)
 {
 	let missing;
@@ -435,6 +466,11 @@ function wdev_recover_missing_interfaces(wdev)
 		wdev_recover_reset(wdev);
 		return;
 	}
+
+	if (!wdev_recover_confirmed(wdev, missing))
+		return;
+
+	delete wdev.recover_pending;
 
 	if (!wdev_recover_allowed(wdev, missing))
 		return;
