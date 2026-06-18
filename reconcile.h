@@ -45,5 +45,8 @@ void reconcile_schedule(enum reconcile_reason reason);
 void reconcile_config_load(struct uci_section *globals);
 void reconcile_dump_status(struct blob_buf *b);
 bool reconcile_wireless_recover_enabled(void);
+void reconcile_wireless_event(const char *radio, const char *action,
+				      const char *reason, const char *section,
+				      const char *ifname, unsigned int count);
 
 #endif

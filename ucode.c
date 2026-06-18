@@ -245,6 +245,41 @@ void netifd_ucode_hotplug_event(const char *name, bool add)
 	netifd_call_cb("hotplug", 2, ucv_string_new(name), ucv_boolean_new(add));
 }
 
+
+static uc_value_t *
+uc_netifd_reconcile_event(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *args = uc_fn_arg(0);
+	uc_value_t *radio, *action, *reason, *section, *ifname, *count;
+	unsigned int cnt = 0;
+
+	(void)vm;
+	(void)nargs;
+
+	if (ucv_type(args) != UC_OBJECT)
+		return NULL;
+
+	radio = ucv_object_get(args, "radio", NULL);
+	action = ucv_object_get(args, "action", NULL);
+	reason = ucv_object_get(args, "reason", NULL);
+	section = ucv_object_get(args, "section", NULL);
+	ifname = ucv_object_get(args, "ifname", NULL);
+	count = ucv_object_get(args, "count", NULL);
+
+	if (count && ucv_type(count) == UC_INTEGER)
+		cnt = ucv_int64_get(count);
+
+	reconcile_wireless_event(
+		ucv_type(radio) == UC_STRING ? ucv_string_get(radio) : NULL,
+		ucv_type(action) == UC_STRING ? ucv_string_get(action) : NULL,
+		ucv_type(reason) == UC_STRING ? ucv_string_get(reason) : NULL,
+		ucv_type(section) == UC_STRING ? ucv_string_get(section) : NULL,
+		ucv_type(ifname) == UC_STRING ? ucv_string_get(ifname) : NULL,
+		cnt);
+
+	return ucv_boolean_new(true);
+}
+
 static uc_value_t *
 uc_netifd_device_ifindex(uc_vm_t *vm, size_t nargs)
 {
@@ -529,6 +564,7 @@ static const uc_function_list_t netifd_fns[] = {
 	{ "process_check",		uc_netifd_process_check },
 	{ "device_set",			uc_netifd_device_set },
 	{ "device_ifindex",		uc_netifd_device_ifindex },
+	{ "reconcile_event",		uc_netifd_reconcile_event },
 	{ "interface_get_enabled",	uc_netifd_interface_get_enabled },
 	{ "interface_handle_link",	uc_netifd_interface_handle_link },
 	{ "interface_get_bridge",	uc_netifd_interface_get_bridge },

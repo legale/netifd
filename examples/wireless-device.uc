@@ -371,14 +371,35 @@ function wdev_find_missing_interface(wdev)
 	}
 }
 
+
+function wdev_recover_event(wdev, action, reason, missing, count)
+{
+	let section = missing ? missing.section : "none";
+	let ifname = missing ? missing.ifname : "none";
+	let cnt = count ?? 0;
+
+	if (netifd.reconcile_event)
+		netifd.reconcile_event({
+			radio: wdev.name,
+			action,
+			reason,
+			section,
+			ifname,
+			count: cnt,
+		});
+
+	netifd.log(netifd.L_NOTICE,
+		`reconcile: wireless=${wdev.name} action=${action} reason=${reason} section=${section} ifname=${ifname} count=${cnt}\n`);
+}
+
 function wdev_recover_allowed(wdev, missing)
 {
 	let now = time();
 
 	if (wdev.recover_suppress_until) {
 		if (now < wdev.recover_suppress_until) {
-			netifd.log(netifd.L_NOTICE,
-				`reconcile: wireless=${wdev.name} action=suppress reason=recover_suppressed section=${missing.section} ifname=${missing.ifname}\n`);
+			wdev_recover_event(wdev, "suppress", "recover_suppressed",
+				missing, wdev.recover_fail_cnt ?? 0);
 			return false;
 		}
 
@@ -387,15 +408,15 @@ function wdev_recover_allowed(wdev, missing)
 	}
 
 	if (wdev.recover_last && now < wdev.recover_last + RECOVER_BACKOFF) {
-		netifd.log(netifd.L_NOTICE,
-			`reconcile: wireless=${wdev.name} action=suppress reason=recover_backoff section=${missing.section} ifname=${missing.ifname}\n`);
+		wdev_recover_event(wdev, "suppress", "recover_backoff",
+			missing, wdev.recover_fail_cnt ?? 0);
 		return false;
 	}
 
 	if ((wdev.recover_fail_cnt ?? 0) >= RECOVER_FAIL_LIMIT) {
 		wdev.recover_suppress_until = now + RECOVER_SUPPRESS;
-		netifd.log(netifd.L_NOTICE,
-			`reconcile: wireless=${wdev.name} action=blocked reason=recover_fail_limit section=${missing.section} ifname=${missing.ifname}\n`);
+		wdev_recover_event(wdev, "blocked", "recover_fail_limit",
+			missing, wdev.recover_fail_cnt ?? 0);
 		return false;
 	}
 
@@ -413,8 +434,7 @@ function wdev_recover_in_grace(wdev)
 	if (now >= wdev.recover_up_time + RECOVER_GRACE)
 		return false;
 
-	netifd.log(netifd.L_NOTICE,
-		`reconcile: wireless=${wdev.name} action=none reason=recover_grace age=${now - wdev.recover_up_time}\n`);
+	wdev_recover_event(wdev, "none", "recover_grace", null, 0);
 	return true;
 }
 
@@ -428,8 +448,8 @@ function wdev_recover_confirmed(wdev, missing)
 		if (now >= pending.since + RECOVER_CONFIRM)
 			return true;
 
-		netifd.log(netifd.L_NOTICE,
-			`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=${now - pending.since} section=${missing.section} ifname=${missing.ifname}\n`);
+		wdev_recover_event(wdev, "none", "recover_confirm", missing,
+			wdev.recover_fail_cnt ?? 0);
 		return false;
 	}
 
@@ -440,8 +460,8 @@ function wdev_recover_confirmed(wdev, missing)
 		since: now,
 	};
 
-	netifd.log(netifd.L_NOTICE,
-		`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=0 section=${missing.section} ifname=${missing.ifname}\n`);
+	wdev_recover_event(wdev, "none", "recover_confirm", missing,
+		wdev.recover_fail_cnt ?? 0);
 	return false;
 }
 
@@ -475,8 +495,8 @@ function wdev_recover_missing_interfaces(wdev)
 
 	wdev.recover_last = time();
 	wdev.recover_fail_cnt = (wdev.recover_fail_cnt ?? 0) + 1;
-	netifd.log(netifd.L_NOTICE,
-		`reconcile: wireless=${wdev.name} action=teardown_setup reason=${missing.reason} section=${missing.section} ifname=${missing.ifname} count=${wdev.recover_fail_cnt}\n`);
+	wdev_recover_event(wdev, "teardown_setup", missing.reason, missing,
+		wdev.recover_fail_cnt);
 	wdev.teardown();
 }
 

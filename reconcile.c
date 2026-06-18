@@ -18,6 +18,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -74,7 +75,66 @@ static const char *rec_last_action;
 static const char *rec_last_reason;
 static enum reconcile_reason rec_last_trigger;
 static unsigned int rec_run_cnt;
+static unsigned int rec_event_cnt;
+static unsigned int rec_action_cnt;
+static unsigned int rec_ifup_cnt;
+static unsigned int rec_restart_cnt;
+static unsigned int rec_restart_failed_cnt;
+static unsigned int rec_suppress_cnt;
+static unsigned int rec_blocked_cnt;
+static unsigned int rec_confirm_cnt;
 static unsigned int rec_wireless_check_cnt;
+static unsigned int rec_wireless_event_cnt;
+static unsigned int rec_wireless_recover_cnt;
+static unsigned int rec_wireless_confirm_cnt;
+static unsigned int rec_wireless_suppress_cnt;
+static unsigned int rec_wireless_blocked_cnt;
+static unsigned int rec_wireless_last_count;
+static char rec_wireless_radio[32];
+static char rec_wireless_action[32];
+static char rec_wireless_reason[64];
+static char rec_wireless_section[64];
+static char rec_wireless_ifname[IFNAMSIZ];
+
+
+static void
+rec_str_set(char *dst, size_t len, const char *src)
+{
+	snprintf(dst, len, "%s", src ? src : "none");
+}
+
+static void
+rec_event_count(const char *action, const char *reason)
+{
+	rec_event_cnt++;
+	rec_last_action = action;
+	rec_last_reason = reason;
+	rec_last_trigger = rec_trigger;
+
+	if (!strcmp(action, "none")) {
+		if (!strcmp(reason, "setup_confirm"))
+			rec_confirm_cnt++;
+		return;
+	}
+
+	if (!strcmp(action, "suppress")) {
+		rec_suppress_cnt++;
+		return;
+	}
+
+	if (!strcmp(action, "blocked")) {
+		rec_blocked_cnt++;
+		return;
+	}
+
+	rec_action_cnt++;
+	if (!strcmp(action, "ifup"))
+		rec_ifup_cnt++;
+	else if (!strcmp(action, "restart"))
+		rec_restart_cnt++;
+	else if (!strcmp(action, "restart_failed"))
+		rec_restart_failed_cnt++;
+}
 
 static void
 rec_config_reset(void)
@@ -200,6 +260,7 @@ rec_iface_log(struct interface *iface, const char *dev, const char *l3,
 	      const char *action, const char *reason, int ifindex,
 	      unsigned int age)
 {
+	rec_event_count(action, reason);
 	netifd_log_message(L_NOTICE,
 		"reconcile: iface=%s want=up state=%s dev=%s l3=%s ifindex=%d age=%u action=%s reason=%s trigger=%s\n",
 		iface->name, rec_state_name(iface->state), dev, l3, ifindex, age,
@@ -502,6 +563,33 @@ reconcile_schedule(enum reconcile_reason reason)
 	uloop_timeout_set(&rec_timer, (rec_cfg.delay_sec * 1000));
 }
 
+
+void
+reconcile_wireless_event(const char *radio, const char *action,
+			 const char *reason, const char *section,
+			 const char *ifname, unsigned int count)
+{
+	rec_wireless_event_cnt++;
+	rec_wireless_last_count = count;
+	rec_str_set(rec_wireless_radio, sizeof(rec_wireless_radio), radio);
+	rec_str_set(rec_wireless_action, sizeof(rec_wireless_action), action);
+	rec_str_set(rec_wireless_reason, sizeof(rec_wireless_reason), reason);
+	rec_str_set(rec_wireless_section, sizeof(rec_wireless_section), section);
+	rec_str_set(rec_wireless_ifname, sizeof(rec_wireless_ifname), ifname);
+
+	if (!strcmp(action ? action : "", "teardown_setup"))
+		rec_wireless_recover_cnt++;
+	else if (!strcmp(action ? action : "", "suppress"))
+		rec_wireless_suppress_cnt++;
+	else if (!strcmp(action ? action : "", "blocked"))
+		rec_wireless_blocked_cnt++;
+	else if (!strcmp(reason ? reason : "", "recover_confirm"))
+		rec_wireless_confirm_cnt++;
+
+	rec_last_action = rec_wireless_action;
+	rec_last_reason = rec_wireless_reason;
+}
+
 bool
 reconcile_wireless_recover_enabled(void)
 {
@@ -566,10 +654,29 @@ reconcile_dump_status(struct blob_buf *b)
 	blobmsg_add_u8(b, "pending", rec_pending);
 	blobmsg_add_u8(b, "wireless_check_pending", rec_need_wireless_check);
 	blobmsg_add_string(b, "last_trigger", rec_reason_name(rec_last_trigger));
-	blobmsg_add_string(b, "last_action", rec_last_action ?: "none");
-	blobmsg_add_string(b, "last_reason", rec_last_reason ?: "none");
+	blobmsg_add_string(b, "last_action", rec_last_action ? rec_last_action : "none");
+	blobmsg_add_string(b, "last_reason", rec_last_reason ? rec_last_reason : "none");
 	blobmsg_add_u32(b, "run_count", rec_run_cnt);
+	blobmsg_add_u32(b, "event_count", rec_event_cnt);
+	blobmsg_add_u32(b, "action_count", rec_action_cnt);
+	blobmsg_add_u32(b, "ifup_count", rec_ifup_cnt);
+	blobmsg_add_u32(b, "restart_count", rec_restart_cnt);
+	blobmsg_add_u32(b, "restart_failed_count", rec_restart_failed_cnt);
+	blobmsg_add_u32(b, "suppress_count", rec_suppress_cnt);
+	blobmsg_add_u32(b, "blocked_count", rec_blocked_cnt);
+	blobmsg_add_u32(b, "confirm_count", rec_confirm_cnt);
 	blobmsg_add_u32(b, "wireless_check_count", rec_wireless_check_cnt);
+	blobmsg_add_u32(b, "wireless_event_count", rec_wireless_event_cnt);
+	blobmsg_add_u32(b, "wireless_recover_count", rec_wireless_recover_cnt);
+	blobmsg_add_u32(b, "wireless_confirm_count", rec_wireless_confirm_cnt);
+	blobmsg_add_u32(b, "wireless_suppress_count", rec_wireless_suppress_cnt);
+	blobmsg_add_u32(b, "wireless_blocked_count", rec_wireless_blocked_cnt);
+	blobmsg_add_string(b, "last_wireless_radio", rec_wireless_radio[0] ? rec_wireless_radio : "none");
+	blobmsg_add_string(b, "last_wireless_action", rec_wireless_action[0] ? rec_wireless_action : "none");
+	blobmsg_add_string(b, "last_wireless_reason", rec_wireless_reason[0] ? rec_wireless_reason : "none");
+	blobmsg_add_string(b, "last_wireless_section", rec_wireless_section[0] ? rec_wireless_section : "none");
+	blobmsg_add_string(b, "last_wireless_ifname", rec_wireless_ifname[0] ? rec_wireless_ifname : "none");
+	blobmsg_add_u32(b, "last_wireless_count", rec_wireless_last_count);
 	blobmsg_add_u32(b, "delay_sec", rec_cfg.delay_sec);
 	blobmsg_add_u32(b, "period_sec", rec_cfg.period_sec);
 	blobmsg_add_u32(b, "setup_warn_sec", rec_cfg.setup_warn_sec);
