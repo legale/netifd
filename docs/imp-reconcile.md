@@ -532,6 +532,70 @@ ubus call network reconcile_status
 The stage is successful when the manual trigger helps tests converge faster but
 all recovery decisions still pass through the existing reconcile guards.
 
+## Milestone M1: reconcile loop field-test baseline
+
+Status: frozen for hardware testing.
+
+This milestone contains the original reconcile plan closure plus the small manual
+operation hooks added before the freeze. Do not add new recovery actions before
+field testing this baseline on AP hardware.
+
+Included stages:
+
+- Stage 1: audit-only reconciler;
+- Stage 2: safe soft reconcile;
+- Stage 3: stuck setup recovery;
+- Stage 4: missing wireless vif recovery;
+- Stage 5: runtime controls and status;
+- Stage 6: production visibility;
+- Stage 8: live wireless ucode deployment boundary;
+- Stage 9: post-hardware-test hardening;
+- Stage 10: manual ubus operation hooks.
+
+Known deployment boundary:
+
+- C netifd changes are in this repository;
+- live `wireless-device.uc` may be owned by a separate package;
+- the minimal live `wireless-device.uc` patch is required for missing
+  `handler_data` / missing kernel `ifname` recovery;
+- `netifd.reconcile_event()` in live ucode is optional telemetry, not required
+  for recovery.
+
+Default behavior for this milestone:
+
+- reconcile loop enabled;
+- soft interface recovery enabled;
+- stuck setup restart enabled;
+- wireless recovery enabled;
+- all recovery paths use existing netifd/wireless FSMs;
+- no direct `service wpad restart`;
+- no direct process kill;
+- no new external ubus/UCI/proto contract requirements.
+
+Hardware validation focus:
+
+```sh
+ubus call network reconcile_reset_status
+j='{ "iface": "cwlan1_60" }'; ubus call hostapd config_remove "$j"
+j='{ "iface": "cwlan0_60" }'; ubus call hostapd config_remove "$j"
+ubus call network reconcile_run
+ubus call network reconcile_status
+logread -f | grep -E 'reconcile|wireless|netifd'
+```
+
+The milestone is successful if removed wireless interfaces are recreated by the
+reconcile path without running `service wpad restart` and without repeated
+recovery loops.
+
+Next work after hardware validation only:
+
+- tune delays/backoff from real logs;
+- decide whether C-side fast trigger for known wireless netdev deletion is
+  needed;
+- decide whether optional wireless telemetry should be added to the live ucode
+  package;
+- avoid adding new recovery stages until the milestone is validated.
+
 ## Prevention and detection
 
 Prevention:
