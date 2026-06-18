@@ -224,16 +224,58 @@ Safety guards:
 
 Recovery must remain opt-in until tested on target hardware.
 
-## Stage 4: missing kernel object recovery
+## Stage 4: missing wireless vif recovery
 
-If an interface is `IFS_UP` but the kernel object is gone:
+Implementation status: initial wireless-specific recovery is implemented.
 
-1. run wireless/network check path first if the interface is wireless-related;
-2. wait a grace interval;
-3. restart only the affected interface if it is still broken.
+Problem solved by this stage: a radio has many configured wifi interfaces, the
+radio setup reaches `up`, but one expected vif/vlan is missing. A full
+`service wpad restart` usually fixes it because hostapd/wpa_supplicant and the
+wireless handler recreate the missing interface. Netifd now does the same kind
+of recovery at radio scope instead of service scope.
+
+Current implementation:
+
+- netifd exposes `device_ifindex(ifname)` to ucode;
+- the wireless device object checks expected vif/vlan handler data;
+- a missing handler result is logged as `missing_handler_data`;
+- a reported ifname that is absent in the kernel is logged as
+  `missing_kernel_ifname`;
+- recovery calls the existing wireless `teardown()` path for the affected radio;
+- the existing teardown callback calls `setup()` again;
+- no direct `service wpad restart`;
+- no direct process kill;
+- no manual device/proto state manipulation.
+
+The recovery is enabled by default through:
+
+```sh
+cmake -DRECONCILE_WIRELESS_RECOVER=ON ...
+```
+
+This option also enables periodic wireless checks from the reconciler.
+
+Safety guards:
+
+- only runs when the wireless device state is `up`;
+- only runs for autostart wireless devices;
+- skips vifs whose target network is known and disabled;
+- per-radio backoff;
+- failure limit;
+- suppression window after repeated failures.
+
+Expected log examples:
+
+```text
+reconcile: wireless=radio0 action=teardown_setup reason=missing_handler_data section=wifi0 ifname=(null) count=1
+reconcile: wireless=radio0 action=teardown_setup reason=missing_kernel_ifname section=wifi1 ifname=wlan0-2 count=1
+reconcile: wireless=radio0 action=suppress reason=recover_backoff section=wifi1 ifname=wlan0-2
+reconcile: wireless=radio0 action=blocked reason=recover_fail_limit section=wifi1 ifname=wlan0-2
+```
 
 This replaces the practical effect of `service wpad restart` for the common case
-where only one vif or interface was missed.
+where only one vif or vlan was missed, while keeping the blast radius limited to
+the affected wireless device.
 
 ## Stage 5: optional escalation
 
