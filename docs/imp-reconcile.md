@@ -260,6 +260,7 @@ Safety guards:
 - only runs when the wireless device state is `up`;
 - only runs for autostart wireless devices;
 - skips vifs whose target network is known and disabled;
+- treats sections without a known network as wanted, matching existing wireless behavior;
 - grace window after radio reaches `up`;
 - persistent-missing confirmation before recovery;
 - per-radio backoff;
@@ -282,7 +283,7 @@ This replaces the practical effect of `service wpad restart` for the common case
 where only one vif or vlan was missed, while keeping the blast radius limited to
 the affected wireless device.
 
-Stage 4 completion criteria:
+Stage 4 completion criteria: completed.
 
 - missing vif/vlan is detected from handler data and kernel ifindex;
 - disabled vif/vlan does not trigger recovery;

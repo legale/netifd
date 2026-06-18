@@ -332,9 +332,10 @@ function wdev_missing_data(wdev, key, section)
 
 function wdev_vif_wanted(vif)
 {
+	let networks = vif.config.network ?? [];
 	let known = false;
 
-	for (let net in vif.config.network) {
+	for (let net in networks) {
 		let state = netifd.interface_get_enabled(net);
 
 		if (!state)
