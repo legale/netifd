@@ -372,3 +372,46 @@ Expected in later action mode: targeted wireless/interface recovery without full
 - Do not rewrite wireless ucode in C.
 - Do not add a second config database.
 - Do not change external netifd behavior by default.
+
+## First hardware test status
+
+The first hardware test should focus on Stage 4 only.
+
+Recommended build defaults for this test:
+
+```sh
+cmake -DRECONCILE_WIRELESS_RECOVER=ON \
+      -DRECONCILE_ACTIONS=OFF \
+      -DRECONCILE_SETUP_RESTART=OFF ...
+```
+
+Expected behavior:
+
+- netifd periodically calls the existing wireless `check_interfaces()` path;
+- if one expected wireless vif/vlan is missing after radio `up`, the problem is
+  confirmed across checks before recovery;
+- recovery is limited to the affected wireless device teardown/setup path;
+- generic interface recovery and stuck setup restart stay disabled;
+- no `service wpad restart`, no process kill, no full network reload.
+
+Useful runtime check:
+
+```sh
+logread -f | grep 'reconcile:'
+```
+
+Expected recovery log:
+
+```text
+reconcile: wireless=radio0 action=teardown_setup reason=missing_kernel_ifname section=wifi1 ifname=wlan0-2 count=1
+```
+
+If the radio is still settling, expected non-action logs are:
+
+```text
+reconcile: wireless=radio0 action=none reason=recover_grace age=2
+reconcile: wireless=radio0 action=none reason=recover_confirm age=0 section=wifi1 ifname=wlan0-2
+```
+
+The test is successful if a missed wifi interface is recreated without running
+`service wpad restart` and without repeated recovery loops.
