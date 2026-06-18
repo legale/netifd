@@ -194,11 +194,11 @@ When action mode is disabled:
 
 ## Stage 3: stuck setup recovery
 
-Implementation status: in progress.
+Implementation status: completed, opt-in.
 
-Setup age is already tracked through `iface->setup_time`. The reconciler warns
-about stuck setup in audit mode and can optionally restart only the affected
-interface through the existing `interface_restart()` path.
+Setup age is tracked through `iface->setup_time`. The reconciler warns about
+stuck setup in audit mode and can optionally restart only the affected interface
+through the existing `interface_restart()` path.
 
 This recovery is disabled by default and requires an explicit build option:
 
@@ -206,9 +206,13 @@ This recovery is disabled by default and requires an explicit build option:
 cmake -DRECONCILE_SETUP_RESTART=ON ...
 ```
 
-Current stage 3 action:
+Stage 3 action:
 
-- `IFS_SETUP` older than `REC_SETUP_RESTART_SEC` -> `interface_restart(iface)`;
+- `IFS_SETUP` older than `REC_SETUP_RESTART_SEC` is treated as stuck;
+- first stuck observation only logs `action=none reason=setup_confirm`;
+- restart is executed only if the same setup instance is still stuck after
+  `REC_SETUP_CONFIRM_SEC`;
+- recovery uses `interface_restart(iface)` only;
 - no direct proto manipulation;
 - no device state change;
 - no `service network restart`;
@@ -218,11 +222,20 @@ Safety guards:
 
 - same desired-state gates as stage 2;
 - no action during `IFS_TEARDOWN`;
+- setup restart is tied to the current `setup_time` generation;
 - per-interface action backoff;
 - failure limit;
-- suppression window after repeated failures.
+- suppression window after repeated failures;
+- confirmation state is cleared once the interface leaves setup.
 
-Recovery must remain opt-in until tested on target hardware.
+Expected logs:
+
+```text
+reconcile: iface=wan want=up state=setup dev=eth0 l3=(null) ifindex=0 age=61 action=none reason=setup_confirm trigger=periodic
+reconcile: iface=wan want=up state=setup dev=eth0 l3=(null) ifindex=0 age=66 action=restart reason=setup_timeout trigger=periodic
+```
+
+Recovery remains opt-in until tested on target hardware.
 
 ## Stage 4: missing wireless vif recovery
 
