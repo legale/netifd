@@ -476,6 +476,27 @@ j='{"iface":"cwlan0_60"}'; ubus call hostapd config_remove "$j"
 Expected recovery: the affected radio is torn down and set up again through the
 existing wireless handler path. `service wpad restart` must not be required.
 
+## Stage 9: hardening after hardware test
+
+Status: completed.
+
+This stage keeps the tested recovery behavior unchanged and only tightens
+production safety.
+
+Completed items:
+
+- CMake reconcile options now always define explicit `0` or `1` values, so
+  `-DRECONCILE_ACTIONS=OFF`, `-DRECONCILE_SETUP_RESTART=OFF` and
+  `-DRECONCILE_WIRELESS_RECOVER=OFF` are real build-time disables;
+- `REC_ENABLE_WIRELESS_CHECK` now tests the value of
+  `REC_ENABLE_WIRELESS_RECOVER`, not only whether the macro exists;
+- the reconciler suppresses self-scheduling from its own internal wireless
+  check, so `netifd_ucode_check_network_enabled()` cannot create an unnecessary
+  delayed reconcile tick while a reconcile run is already active.
+
+The stage does not add new recovery actions. It only makes existing controls
+and scheduling behavior less surprising.
+
 ## Prevention and detection
 
 Prevention:

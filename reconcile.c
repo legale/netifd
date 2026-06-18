@@ -52,6 +52,7 @@ static enum reconcile_reason rec_reason;
 static enum reconcile_reason rec_trigger;
 static bool rec_pending;
 static bool rec_inited;
+static bool rec_running;
 static bool rec_need_wireless_check;
 
 static const struct reconcile_config rec_default_cfg = {
@@ -522,6 +523,7 @@ rec_run(void)
 	if (!rec_cfg.enabled)
 		return;
 
+	rec_running = true;
 	rec_run_cnt++;
 
 	if (rec_reason_needs_wireless_check(rec_trigger))
@@ -531,6 +533,7 @@ rec_run(void)
 	vlist_for_each_element(&interfaces, iface, node)
 		rec_iface_check(iface);
 
+	rec_running = false;
 	if (rec_pending)
 		return;
 
@@ -549,6 +552,9 @@ void
 reconcile_schedule(enum reconcile_reason reason)
 {
 	if (!rec_inited || !rec_cfg.enabled)
+		return;
+
+	if (rec_running && reason == REC_REASON_WIRELESS_CHECK)
 		return;
 
 	if (rec_reason_needs_wireless_check(reason))
