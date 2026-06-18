@@ -14,6 +14,7 @@ const DEFAULT_SCRIPT_TIMEOUT = 30 * 1000;
 const RECOVER_BACKOFF = 15;
 const RECOVER_SUPPRESS = 60;
 const RECOVER_FAIL_LIMIT = 3;
+const RECOVER_GRACE = 5;
 
 let wdev_cur;
 let wdev_handler = {};
@@ -398,6 +399,23 @@ function wdev_recover_allowed(wdev, missing)
 	return true;
 }
 
+function wdev_recover_in_grace(wdev)
+{
+	let now;
+
+	if (!wdev.recover_up_time)
+		return false;
+
+	now = time();
+	if (now >= wdev.recover_up_time + RECOVER_GRACE)
+		return false;
+
+	netifd.log(netifd.L_NOTICE,
+		`reconcile: wireless=${wdev.name} action=none reason=recover_grace age=${now - wdev.recover_up_time}
+`);
+	return true;
+}
+
 function wdev_recover_missing_interfaces(wdev)
 {
 	let missing;
@@ -405,7 +423,11 @@ function wdev_recover_missing_interfaces(wdev)
 	if (!netifd.reconcile_wireless_recover)
 		return;
 
-	if (!wdev.autostart || wdev.state != "up")
+	if (wdev.delete || wdev.data.config.disabled || !wdev.autostart ||
+	    wdev.state != "up" || wdev.retry_setup_failed)
+		return;
+
+	if (wdev_recover_in_grace(wdev))
 		return;
 
 	missing = wdev_find_missing_interface(wdev);
@@ -589,6 +611,7 @@ function wdev_mark_up(wdev)
 			handle_link(data.ifname, data, true);
 	}
 	wdev.state = "up";
+	wdev.recover_up_time = time();
 
 	return 0;
 }
