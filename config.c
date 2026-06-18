@@ -684,6 +684,8 @@ config_init_globals(void)
 {
 	struct uci_section *globals = uci_lookup_section(
 			uci_ctx, uci_network, "globals");
+	reconcile_config_load(globals);
+
 	if (!globals)
 		return;
 

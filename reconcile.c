@@ -14,17 +14,24 @@
 #include "system.h"
 #include "ucode.h"
 
-#define REC_DELAY_MS		1000
-#define REC_PERIOD_MS		10000
-#define REC_SETUP_WARN_SEC	45
-#define REC_SETUP_RESTART_SEC	60
-#define REC_SETUP_CONFIRM_SEC	5
-#define REC_ACTION_BACKOFF_SEC	15
-#define REC_ACTION_SUPPRESS_SEC	60
-#define REC_FAIL_LIMIT		3
+#include <uci.h>
+
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define REC_DEFAULT_DELAY_SEC		1
+#define REC_DEFAULT_PERIOD_SEC		10
+#define REC_DEFAULT_SETUP_WARN_SEC	45
+#define REC_DEFAULT_SETUP_RESTART_SEC	60
+#define REC_DEFAULT_SETUP_CONFIRM_SEC	5
+#define REC_DEFAULT_ACTION_BACKOFF_SEC	15
+#define REC_DEFAULT_ACTION_SUPPRESS_SEC	60
+#define REC_DEFAULT_FAIL_LIMIT		3
 
 #ifndef REC_ENABLE_ACTIONS
-#define REC_ENABLE_ACTIONS	0
+#define REC_ENABLE_ACTIONS		1
 #endif
 
 #ifndef REC_ENABLE_WIRELESS_CHECK
@@ -36,7 +43,7 @@
 #endif
 
 #ifndef REC_ENABLE_SETUP_RESTART
-#define REC_ENABLE_SETUP_RESTART	0
+#define REC_ENABLE_SETUP_RESTART	1
 #endif
 
 static struct uloop_timeout rec_timer;
@@ -45,6 +52,86 @@ static enum reconcile_reason rec_trigger;
 static bool rec_pending;
 static bool rec_inited;
 static bool rec_need_wireless_check;
+
+static const struct reconcile_config rec_default_cfg = {
+	.enabled = true,
+	.actions = !!REC_ENABLE_ACTIONS,
+	.setup_restart = !!REC_ENABLE_SETUP_RESTART,
+	.wireless_check = !!REC_ENABLE_WIRELESS_CHECK,
+	.delay_sec = REC_DEFAULT_DELAY_SEC,
+	.period_sec = REC_DEFAULT_PERIOD_SEC,
+	.setup_warn_sec = REC_DEFAULT_SETUP_WARN_SEC,
+	.setup_restart_sec = REC_DEFAULT_SETUP_RESTART_SEC,
+	.setup_confirm_sec = REC_DEFAULT_SETUP_CONFIRM_SEC,
+	.action_backoff_sec = REC_DEFAULT_ACTION_BACKOFF_SEC,
+	.action_suppress_sec = REC_DEFAULT_ACTION_SUPPRESS_SEC,
+	.fail_limit = REC_DEFAULT_FAIL_LIMIT,
+};
+
+static struct reconcile_config rec_cfg = { 0 };
+
+static const char *rec_last_action;
+static const char *rec_last_reason;
+static enum reconcile_reason rec_last_trigger;
+static unsigned int rec_run_cnt;
+static unsigned int rec_wireless_check_cnt;
+
+static void
+rec_config_reset(void)
+{
+	rec_cfg = rec_default_cfg;
+}
+
+static const char *
+rec_uci_opt(struct uci_section *s, const char *name)
+{
+	if (!s)
+		return NULL;
+
+	return uci_lookup_option_string(s->package->ctx, s, name);
+}
+
+static bool
+rec_parse_bool(const char *val, bool def)
+{
+	if (!val)
+		return def;
+
+	if (!strcmp(val, "1") || !strcmp(val, "true") ||
+	    !strcmp(val, "on") || !strcmp(val, "yes") ||
+	    !strcmp(val, "enabled"))
+		return true;
+
+	if (!strcmp(val, "0") || !strcmp(val, "false") ||
+	    !strcmp(val, "off") || !strcmp(val, "no") ||
+	    !strcmp(val, "disabled"))
+		return false;
+
+	return def;
+}
+
+static unsigned int
+rec_parse_uint(const char *val, unsigned int def, unsigned int min)
+{
+	char *end;
+	unsigned long ret;
+
+	if (!val)
+		return def;
+
+	errno = 0;
+	ret = strtoul(val, &end, 0);
+	if (errno || end == val || *end)
+		return def;
+
+	if (ret < min)
+		return min;
+
+	if (ret > UINT_MAX)
+		return def;
+
+	return ret;
+}
 
 static const char *
 rec_reason_name(enum reconcile_reason reason)
@@ -126,6 +213,9 @@ rec_iface_action_save(struct interface *iface, const char *action,
 	iface->rec_last_action = now;
 	iface->rec_last_action_name = action;
 	iface->rec_last_reason = reason;
+	rec_last_action = action;
+	rec_last_reason = reason;
+	rec_last_trigger = rec_trigger;
 }
 
 static void
@@ -155,14 +245,14 @@ rec_iface_action_allowed(struct interface *iface, const char *dev,
 	}
 
 	if (iface->rec_last_action &&
-	    now < iface->rec_last_action + REC_ACTION_BACKOFF_SEC) {
+	    now < iface->rec_last_action + rec_cfg.action_backoff_sec) {
 		rec_iface_log(iface, dev, l3, "suppress", "action_backoff",
 			      0, 0);
 		return false;
 	}
 
-	if (iface->rec_fail_cnt >= REC_FAIL_LIMIT) {
-		iface->rec_suppress_until = now + REC_ACTION_SUPPRESS_SEC;
+	if (iface->rec_fail_cnt >= rec_cfg.fail_limit) {
+		iface->rec_suppress_until = now + rec_cfg.action_suppress_sec;
 		rec_iface_action_save(iface, "blocked", reason, now);
 		rec_iface_log(iface, dev, l3, "blocked", "action_fail_limit",
 			      0, 0);
@@ -178,7 +268,7 @@ rec_iface_action_ifup(struct interface *iface, const char *dev,
 {
 	time_t now;
 
-	if (!REC_ENABLE_ACTIONS) {
+	if (!rec_cfg.actions) {
 		rec_iface_log(iface, dev, l3, "none", reason, 0, 0);
 		return;
 	}
@@ -200,7 +290,7 @@ rec_iface_action_restart(struct interface *iface, const char *dev,
 	time_t now;
 	int ret;
 
-	if (!REC_ENABLE_SETUP_RESTART) {
+	if (!rec_cfg.setup_restart) {
 		rec_iface_log(iface, dev, l3, "none", reason, 0, age);
 		return;
 	}
@@ -216,7 +306,7 @@ rec_iface_action_restart(struct interface *iface, const char *dev,
 	if (!iface->rec_setup_confirm)
 		iface->rec_setup_confirm = now;
 
-	if (now < iface->rec_setup_confirm + REC_SETUP_CONFIRM_SEC) {
+	if (now < iface->rec_setup_confirm + rec_cfg.setup_confirm_sec) {
 		rec_iface_log(iface, dev, l3, "none", "setup_confirm", 0, age);
 		return;
 	}
@@ -287,10 +377,10 @@ rec_iface_check(struct interface *iface)
 		if (now > iface->setup_time)
 			age = now - iface->setup_time;
 
-		if (age >= REC_SETUP_RESTART_SEC)
+		if (age >= rec_cfg.setup_restart_sec)
 			rec_iface_action_restart(iface, dev_name, l3_name,
 					       "setup_timeout", age);
-		else if (age >= REC_SETUP_WARN_SEC)
+		else if (age >= rec_cfg.setup_warn_sec)
 			rec_iface_log(iface, dev_name, l3_name, "none",
 				      "setup_timeout", 0, age);
 		else {
@@ -347,12 +437,16 @@ rec_wireless_check(void)
 
 	rec_need_wireless_check = false;
 
-	if (!REC_ENABLE_WIRELESS_CHECK)
+	if (!rec_cfg.wireless_check)
 		return;
 
 	netifd_log_message(L_DEBUG,
 		"reconcile: action=wireless_check trigger=%s\n",
 		rec_reason_name(rec_trigger));
+	rec_wireless_check_cnt++;
+	rec_last_action = "wireless_check";
+	rec_last_reason = "scheduled";
+	rec_last_trigger = rec_trigger;
 	netifd_ucode_check_network_enabled();
 }
 
@@ -363,6 +457,11 @@ rec_run(void)
 
 	rec_trigger = rec_reason;
 	rec_pending = false;
+
+	if (!rec_cfg.enabled)
+		return;
+
+	rec_run_cnt++;
 
 	if (rec_reason_needs_wireless_check(rec_trigger))
 		rec_need_wireless_check = true;
@@ -375,7 +474,7 @@ rec_run(void)
 		return;
 
 	rec_reason = REC_REASON_PERIODIC;
-	uloop_timeout_set(&rec_timer, REC_PERIOD_MS);
+	uloop_timeout_set(&rec_timer, (rec_cfg.period_sec * 1000));
 }
 
 static void
@@ -388,7 +487,7 @@ rec_timeout_cb(struct uloop_timeout *t)
 void
 reconcile_schedule(enum reconcile_reason reason)
 {
-	if (!rec_inited)
+	if (!rec_inited || !rec_cfg.enabled)
 		return;
 
 	if (rec_reason_needs_wireless_check(reason))
@@ -400,12 +499,93 @@ reconcile_schedule(enum reconcile_reason reason)
 		return;
 
 	rec_pending = true;
-	uloop_timeout_set(&rec_timer, REC_DELAY_MS);
+	uloop_timeout_set(&rec_timer, (rec_cfg.delay_sec * 1000));
+}
+
+bool
+reconcile_wireless_recover_enabled(void)
+{
+	if (!rec_cfg.delay_sec)
+		return rec_default_cfg.enabled && rec_default_cfg.wireless_check;
+
+	return rec_cfg.enabled && rec_cfg.wireless_check;
+}
+
+void
+reconcile_config_load(struct uci_section *globals)
+{
+	const char *wireless;
+
+	rec_config_reset();
+
+	rec_cfg.enabled = rec_parse_bool(rec_uci_opt(globals, "reconcile_enabled"),
+		rec_cfg.enabled);
+	rec_cfg.actions = rec_parse_bool(rec_uci_opt(globals, "reconcile_actions"),
+		rec_cfg.actions);
+	rec_cfg.setup_restart = rec_parse_bool(rec_uci_opt(globals, "reconcile_setup_restart"),
+		rec_cfg.setup_restart);
+
+	wireless = rec_uci_opt(globals, "reconcile_wireless_recover");
+	if (!wireless)
+		wireless = rec_uci_opt(globals, "reconcile_wireless_check");
+	rec_cfg.wireless_check = rec_parse_bool(wireless, rec_cfg.wireless_check);
+
+	rec_cfg.delay_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_delay_sec"),
+		rec_cfg.delay_sec, 1);
+	rec_cfg.period_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_period_sec"),
+		rec_cfg.period_sec, 1);
+	rec_cfg.setup_warn_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_setup_warn_sec"),
+		rec_cfg.setup_warn_sec, 1);
+	rec_cfg.setup_restart_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_setup_restart_sec"),
+		rec_cfg.setup_restart_sec, 1);
+	rec_cfg.setup_confirm_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_setup_confirm_sec"),
+		rec_cfg.setup_confirm_sec, 1);
+	rec_cfg.action_backoff_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_action_backoff_sec"),
+		rec_cfg.action_backoff_sec, 1);
+	rec_cfg.action_suppress_sec = rec_parse_uint(rec_uci_opt(globals, "reconcile_action_suppress_sec"),
+		rec_cfg.action_suppress_sec, 1);
+	rec_cfg.fail_limit = rec_parse_uint(rec_uci_opt(globals, "reconcile_fail_limit"),
+		rec_cfg.fail_limit, 1);
+
+	netifd_ucode_set_reconcile_wireless_recover(
+		reconcile_wireless_recover_enabled());
+
+	if (rec_inited && !rec_cfg.enabled) {
+		uloop_timeout_cancel(&rec_timer);
+		rec_pending = false;
+	}
+}
+
+void
+reconcile_dump_status(struct blob_buf *b)
+{
+	blobmsg_add_u8(b, "enabled", rec_cfg.enabled);
+	blobmsg_add_u8(b, "actions", rec_cfg.actions);
+	blobmsg_add_u8(b, "setup_restart", rec_cfg.setup_restart);
+	blobmsg_add_u8(b, "wireless_check", rec_cfg.wireless_check);
+	blobmsg_add_u8(b, "pending", rec_pending);
+	blobmsg_add_u8(b, "wireless_check_pending", rec_need_wireless_check);
+	blobmsg_add_string(b, "last_trigger", rec_reason_name(rec_last_trigger));
+	blobmsg_add_string(b, "last_action", rec_last_action ?: "none");
+	blobmsg_add_string(b, "last_reason", rec_last_reason ?: "none");
+	blobmsg_add_u32(b, "run_count", rec_run_cnt);
+	blobmsg_add_u32(b, "wireless_check_count", rec_wireless_check_cnt);
+	blobmsg_add_u32(b, "delay_sec", rec_cfg.delay_sec);
+	blobmsg_add_u32(b, "period_sec", rec_cfg.period_sec);
+	blobmsg_add_u32(b, "setup_warn_sec", rec_cfg.setup_warn_sec);
+	blobmsg_add_u32(b, "setup_restart_sec", rec_cfg.setup_restart_sec);
+	blobmsg_add_u32(b, "setup_confirm_sec", rec_cfg.setup_confirm_sec);
+	blobmsg_add_u32(b, "action_backoff_sec", rec_cfg.action_backoff_sec);
+	blobmsg_add_u32(b, "action_suppress_sec", rec_cfg.action_suppress_sec);
+	blobmsg_add_u32(b, "fail_limit", rec_cfg.fail_limit);
 }
 
 void
 reconcile_init(void)
 {
+	if (!rec_cfg.delay_sec)
+		rec_config_reset();
+
 	rec_timer.cb = rec_timeout_cb;
 	rec_inited = true;
 	reconcile_schedule(REC_REASON_INIT);

@@ -22,6 +22,7 @@
 #include "proto.h"
 #include "ubus.h"
 #include "system.h"
+#include "reconcile.h"
 
 struct ubus_context *ubus_ctx = NULL;
 static struct blob_buf b;
@@ -111,6 +112,19 @@ netifd_get_proto_handlers(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	blob_buf_init(&b, 0);
 	proto_dump_handlers(&b);
+	ubus_send_reply(ctx, req, b.head);
+
+	return 0;
+}
+
+static int
+netifd_handle_reconcile_status(struct ubus_context *ctx,
+			      struct ubus_object *obj,
+			      struct ubus_request_data *req,
+			      const char *method, struct blob_attr *msg)
+{
+	blob_buf_init(&b, 0);
+	reconcile_dump_status(&b);
 	ubus_send_reply(ctx, req, b.head);
 
 	return 0;
@@ -207,6 +221,7 @@ static struct ubus_method main_object_methods[] = {
 	{ .name = "reload", .handler = netifd_handle_reload },
 	UBUS_METHOD("add_host_route", netifd_add_host_route, route_policy),
 	{ .name = "get_proto_handlers", .handler = netifd_get_proto_handlers },
+	{ .name = "reconcile_status", .handler = netifd_handle_reconcile_status },
 	UBUS_METHOD("add_dynamic", netifd_add_dynamic, dynamic_policy),
 	UBUS_METHOD("netns_updown", netifd_netns_updown, netns_updown_policy),
 };

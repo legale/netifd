@@ -536,6 +536,16 @@ static const uc_function_list_t netifd_fns[] = {
 };
 
 
+void
+netifd_ucode_set_reconcile_wireless_recover(bool enabled)
+{
+	if (!netifd_obj)
+		return;
+
+	ucv_object_add(netifd_obj, "reconcile_wireless_recover",
+		ucv_boolean_new(enabled));
+}
+
 void netifd_ucode_init(void)
 {
 	static uc_parse_config_t config = {
@@ -574,9 +584,8 @@ void netifd_ucode_init(void)
 #ifdef DUMMY_MODE
 	ucv_object_add(obj, "dummy_mode", ucv_boolean_new(true));
 #endif
-#ifdef REC_ENABLE_WIRELESS_RECOVER
-	ucv_object_add(obj, "reconcile_wireless_recover", ucv_boolean_new(true));
-#endif
+	ucv_object_add(obj, "reconcile_wireless_recover",
+		ucv_boolean_new(reconcile_wireless_recover_enabled()));
 
 #define ADD_CONST(n) ucv_object_add(obj, #n, ucv_int64_new(n))
 	ADD_CONST(L_CRIT);
