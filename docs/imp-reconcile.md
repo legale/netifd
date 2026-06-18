@@ -37,8 +37,10 @@ netifd already has most of the needed pieces:
   teardown and notify paths.
 - `ucode.c`: C to ucode bridge, including
   `netifd_ucode_check_network_enabled()` and hotplug event integration.
-- `examples/wireless.uc`, `examples/wireless-device.uc`: wireless device and vif
-  FSMs, retry and hotplug processing.
+- `examples/wireless.uc`, `examples/wireless-device.uc`: reference wireless device
+  and vif FSMs, retry and hotplug processing. These files are not always the
+  runtime source installed on target devices; some OpenWrt trees ship the live
+  wireless ucode from a separate package.
 - `system-linux.c`: kernel state and hotplug/netlink input.
 
 The reconciler must use these pieces instead of creating a second network
@@ -100,6 +102,8 @@ Device desired state is derived from the existing interface and device ownership
 
 Wireless desired state should not be reimplemented in C in the first version.
 Use the existing ucode side through `netifd_ucode_check_network_enabled()`.
+The actual production patch must be applied to the wireless-device.uc that is
+installed on the target, not blindly to `src/examples/wireless-device.uc`.
 
 ## Stage 1: audit-only reconciler
 
@@ -358,6 +362,70 @@ cmake -DRECONCILE_ACTIONS=OFF -DRECONCILE_SETUP_RESTART=OFF -DRECONCILE_WIRELESS
 ```
 
 Full `wpad` restart is still not a netifd action.
+
+
+## Stage 8: deployment boundary and live wireless ucode patch
+
+Status: completed.
+
+The wireless recovery logic has one required non-C dependency: the live
+`wireless-device.uc` used on the target must contain the missing vif recovery
+check. In this tree, `examples/wireless-device.uc` is only a reference copy. On
+platforms where wireless ucode is provided by another package, the same minimal
+patch must be applied there.
+
+Why this is necessary:
+
+- C netifd can observe only devices that already exist or existed before;
+- a wifi-iface that never produced handler data may be invisible to C;
+- `wireless-device.uc` owns `data.vif`, `handler_data`, radio state and the
+  existing teardown/setup handler path;
+- therefore the missing handler data check belongs in live wireless ucode.
+
+Required live `wireless-device.uc` changes are intentionally limited:
+
+- fix the disabled-vif key bug: `disabled[wdev] = true` must become
+  `disabled[name] = true`;
+- add `wdev_recover_missing_interfaces()` and its small helper state;
+- in `check()`, when `wdev_update_disabled_vifs()` reports no config change,
+  call `wdev_recover_missing_interfaces(this)` before returning;
+- in `wdev_mark_up()`, store `wdev.recover_up_time = time()`;
+- in `wdev_reset()`, clear recovery state;
+- do not add telemetry calls to live ucode unless needed.
+
+Optional telemetry:
+
+`netifd.reconcile_event()` may be called from live wireless ucode to populate
+wireless counters in `ubus call network reconcile_status`. This is optional. If
+it is not added, recovery still works and logread remains the source of wireless
+recovery events.
+
+Deployment check on target:
+
+```sh
+grep -R "missing_kernel_ifname\|wdev_recover_missing_interfaces\|device_ifindex" -n /lib/netifd /usr/lib /usr/share/ucode
+```
+
+Expected result: the live wireless ucode path must contain the recovery function
+and must call `netifd.device_ifindex()`. If the grep is empty, the target is
+running old wireless ucode and Stage 4 cannot recover a vif that never produced
+valid handler data.
+
+Minimal recovery test on target:
+
+```sh
+logread -f | grep -E 'reconcile|wireless|hostapd'
+```
+
+Then inject the failure, for example:
+
+```sh
+j='{"iface":"cwlan1_60"}'; ubus call hostapd config_remove "$j"
+j='{"iface":"cwlan0_60"}'; ubus call hostapd config_remove "$j"
+```
+
+Expected recovery: the affected radio is torn down and set up again through the
+existing wireless handler path. `service wpad restart` must not be required.
 
 ## Prevention and detection
 
