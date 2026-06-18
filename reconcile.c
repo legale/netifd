@@ -318,7 +318,7 @@ rec_wireless_check(void)
 	if (!REC_ENABLE_WIRELESS_CHECK)
 		return;
 
-	netifd_log_message(L_NOTICE,
+	netifd_log_message(L_DEBUG,
 		"reconcile: action=wireless_check trigger=%s\n",
 		rec_reason_name(rec_trigger));
 	netifd_ucode_check_network_enabled();
