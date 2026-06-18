@@ -14,6 +14,7 @@
 #include <ucode/vm.h>
 #include <ucode/lib.h>
 #include <ucode/compiler.h>
+#include <net/if.h>
 #include "netifd.h"
 #include "device.h"
 #include "interface.h"
@@ -242,6 +243,19 @@ void netifd_ucode_check_network_enabled(void)
 void netifd_ucode_hotplug_event(const char *name, bool add)
 {
 	netifd_call_cb("hotplug", 2, ucv_string_new(name), ucv_boolean_new(add));
+}
+
+static uc_value_t *
+uc_netifd_device_ifindex(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *name = uc_fn_arg(0);
+	unsigned int ifindex;
+
+	if (ucv_type(name) != UC_STRING)
+		return NULL;
+
+	ifindex = if_nametoindex(ucv_string_get(name));
+	return ucv_int64_new(ifindex);
 }
 
 static uc_value_t *
@@ -514,6 +528,7 @@ static const uc_function_list_t netifd_fns[] = {
 	{ "process",			uc_netifd_process },
 	{ "process_check",		uc_netifd_process_check },
 	{ "device_set",			uc_netifd_device_set },
+	{ "device_ifindex",		uc_netifd_device_ifindex },
 	{ "interface_get_enabled",	uc_netifd_interface_get_enabled },
 	{ "interface_handle_link",	uc_netifd_interface_handle_link },
 	{ "interface_get_bridge",	uc_netifd_interface_get_bridge },
@@ -558,6 +573,9 @@ void netifd_ucode_init(void)
 		ucv_object_add(obj, "config_path", ucv_string_new(config_path));
 #ifdef DUMMY_MODE
 	ucv_object_add(obj, "dummy_mode", ucv_boolean_new(true));
+#endif
+#ifdef REC_ENABLE_WIRELESS_RECOVER
+	ucv_object_add(obj, "reconcile_wireless_recover", ucv_boolean_new(true));
 #endif
 
 #define ADD_CONST(n) ucv_object_add(obj, #n, ucv_int64_new(n))

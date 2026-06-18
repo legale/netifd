@@ -27,7 +27,11 @@
 #endif
 
 #ifndef REC_ENABLE_WIRELESS_CHECK
+#ifdef REC_ENABLE_WIRELESS_RECOVER
+#define REC_ENABLE_WIRELESS_CHECK	1
+#else
 #define REC_ENABLE_WIRELESS_CHECK	REC_ENABLE_ACTIONS
+#endif
 #endif
 
 #ifndef REC_ENABLE_SETUP_RESTART
@@ -293,6 +297,7 @@ rec_reason_needs_wireless_check(enum reconcile_reason reason)
 {
 	switch (reason) {
 	case REC_REASON_INIT:
+	case REC_REASON_PERIODIC:
 	case REC_REASON_CONFIG:
 	case REC_REASON_DEVICE_EVENT:
 	case REC_REASON_HOTPLUG:
@@ -327,6 +332,8 @@ rec_run(void)
 	rec_trigger = rec_reason;
 	rec_pending = false;
 
+	if (rec_reason_needs_wireless_check(rec_trigger))
+		rec_need_wireless_check = true;
 	rec_wireless_check();
 
 	vlist_for_each_element(&interfaces, iface, node)

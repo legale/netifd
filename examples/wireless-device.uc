@@ -11,6 +11,9 @@ const NOTIFY_CMD_SET_RETRY = 4;
 
 const DEFAULT_RETRY = 3;
 const DEFAULT_SCRIPT_TIMEOUT = 30 * 1000;
+const RECOVER_BACKOFF = 15;
+const RECOVER_SUPPRESS = 60;
+const RECOVER_FAIL_LIMIT = 3;
 
 let wdev_cur;
 let wdev_handler = {};
@@ -296,6 +299,131 @@ function wdev_proc_add(wdev, data)
 }
 
 
+function wdev_recover_reset(wdev)
+{
+	delete wdev.recover_last;
+	delete wdev.recover_fail_cnt;
+	delete wdev.recover_suppress_until;
+}
+
+function wdev_missing_data(wdev, key, section)
+{
+	let data = wdev.handler_data[key];
+	let ifindex;
+
+	if (!data || !data.ifname)
+		return {
+			section,
+			ifname: "(null)",
+			reason: "missing_handler_data"
+		};
+
+	ifindex = netifd.device_ifindex(data.ifname);
+	if (!ifindex)
+		return {
+			section,
+			ifname: data.ifname,
+			reason: "missing_kernel_ifname"
+		};
+}
+
+function wdev_vif_wanted(vif)
+{
+	let known = false;
+
+	for (let net in vif.config.network) {
+		let state = netifd.interface_get_enabled(net);
+
+		if (!state)
+			continue;
+
+		known = true;
+		if (state.enabled)
+			return true;
+	}
+
+	return !known;
+}
+
+function wdev_find_missing_interface(wdev)
+{
+	for (let vif in wdev.data.vif) {
+		if (!wdev.disabled_vifs[vif.name] && wdev_vif_wanted(vif)) {
+			let missing = wdev_missing_data(wdev, vif.name, vif.name);
+			if (missing)
+				return missing;
+		}
+
+		for (let vlan in vif.vlan) {
+			let key = vif.name + "/" + vlan.name;
+
+			if (wdev.disabled_vifs[vlan.name] || !wdev_vif_wanted(vlan))
+				continue;
+
+			let missing = wdev_missing_data(wdev, key, key);
+			if (missing)
+				return missing;
+		}
+	}
+}
+
+function wdev_recover_allowed(wdev, missing)
+{
+	let now = time();
+
+	if (wdev.recover_suppress_until) {
+		if (now < wdev.recover_suppress_until) {
+			netifd.log(netifd.L_NOTICE,
+				`reconcile: wireless=${wdev.name} action=suppress reason=recover_suppressed section=${missing.section} ifname=${missing.ifname}\n`);
+			return false;
+		}
+
+		delete wdev.recover_suppress_until;
+		wdev.recover_fail_cnt = 0;
+	}
+
+	if (wdev.recover_last && now < wdev.recover_last + RECOVER_BACKOFF) {
+		netifd.log(netifd.L_NOTICE,
+			`reconcile: wireless=${wdev.name} action=suppress reason=recover_backoff section=${missing.section} ifname=${missing.ifname}\n`);
+		return false;
+	}
+
+	if ((wdev.recover_fail_cnt ?? 0) >= RECOVER_FAIL_LIMIT) {
+		wdev.recover_suppress_until = now + RECOVER_SUPPRESS;
+		netifd.log(netifd.L_NOTICE,
+			`reconcile: wireless=${wdev.name} action=blocked reason=recover_fail_limit section=${missing.section} ifname=${missing.ifname}\n`);
+		return false;
+	}
+
+	return true;
+}
+
+function wdev_recover_missing_interfaces(wdev)
+{
+	let missing;
+
+	if (!netifd.reconcile_wireless_recover)
+		return;
+
+	if (!wdev.autostart || wdev.state != "up")
+		return;
+
+	missing = wdev_find_missing_interface(wdev);
+	if (!missing) {
+		wdev_recover_reset(wdev);
+		return;
+	}
+
+	if (!wdev_recover_allowed(wdev, missing))
+		return;
+
+	wdev.recover_last = time();
+	wdev.recover_fail_cnt = (wdev.recover_fail_cnt ?? 0) + 1;
+	netifd.log(netifd.L_NOTICE,
+		`reconcile: wireless=${wdev.name} action=teardown_setup reason=${missing.reason} section=${missing.section} ifname=${missing.ifname} count=${wdev.recover_fail_cnt}\n`);
+	wdev.teardown();
+}
+
 function setup()
 {
 	if (this.state != "up" && this.state != "down")
@@ -373,6 +501,7 @@ function wdev_reset(wdev)
 {
 	wdev.retry = DEFAULT_RETRY;
 	delete wdev.retry_setup_failed;
+	wdev_recover_reset(wdev);
 }
 
 function update(data)
@@ -440,8 +569,10 @@ function stop()
 
 function check()
 {
-	if (!wdev_update_disabled_vifs(this))
+	if (!wdev_update_disabled_vifs(this)) {
+		wdev_recover_missing_interfaces(this);
 		return;
+	}
 
 	wdev_config_init(this);
 	this.setup();
