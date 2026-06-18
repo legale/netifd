@@ -130,6 +130,36 @@ netifd_handle_reconcile_status(struct ubus_context *ctx,
 	return 0;
 }
 
+static int
+netifd_handle_reconcile_run(struct ubus_context *ctx,
+			   struct ubus_object *obj,
+			   struct ubus_request_data *req,
+			   const char *method, struct blob_attr *msg)
+{
+	reconcile_schedule(REC_REASON_MANUAL);
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "status", "scheduled");
+	ubus_send_reply(ctx, req, b.head);
+
+	return 0;
+}
+
+static int
+netifd_handle_reconcile_reset_status(struct ubus_context *ctx,
+				    struct ubus_object *obj,
+				    struct ubus_request_data *req,
+				    const char *method, struct blob_attr *msg)
+{
+	reconcile_reset_status();
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "status", "reset");
+	ubus_send_reply(ctx, req, b.head);
+
+	return 0;
+}
+
 
 enum {
 	DI_NAME,
@@ -222,6 +252,8 @@ static struct ubus_method main_object_methods[] = {
 	UBUS_METHOD("add_host_route", netifd_add_host_route, route_policy),
 	{ .name = "get_proto_handlers", .handler = netifd_get_proto_handlers },
 	{ .name = "reconcile_status", .handler = netifd_handle_reconcile_status },
+	{ .name = "reconcile_run", .handler = netifd_handle_reconcile_run },
+	{ .name = "reconcile_reset_status", .handler = netifd_handle_reconcile_reset_status },
 	UBUS_METHOD("add_dynamic", netifd_add_dynamic, dynamic_policy),
 	UBUS_METHOD("netns_updown", netifd_netns_updown, netns_updown_policy),
 };

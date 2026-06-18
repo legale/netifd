@@ -214,6 +214,8 @@ rec_reason_name(enum reconcile_reason reason)
 		return "hotplug";
 	case REC_REASON_WIRELESS_CHECK:
 		return "wireless_check";
+	case REC_REASON_MANUAL:
+		return "manual";
 	default:
 		return "unknown";
 	}
@@ -485,6 +487,7 @@ rec_reason_needs_wireless_check(enum reconcile_reason reason)
 	case REC_REASON_CONFIG:
 	case REC_REASON_DEVICE_EVENT:
 	case REC_REASON_HOTPLUG:
+	case REC_REASON_MANUAL:
 		return true;
 	default:
 		return false;
@@ -648,6 +651,35 @@ reconcile_config_load(struct uci_section *globals)
 		uloop_timeout_cancel(&rec_timer);
 		rec_pending = false;
 	}
+}
+
+void
+reconcile_reset_status(void)
+{
+	rec_last_action = NULL;
+	rec_last_reason = NULL;
+	rec_last_trigger = REC_REASON_INIT;
+	rec_run_cnt = 0;
+	rec_event_cnt = 0;
+	rec_action_cnt = 0;
+	rec_ifup_cnt = 0;
+	rec_restart_cnt = 0;
+	rec_restart_failed_cnt = 0;
+	rec_suppress_cnt = 0;
+	rec_blocked_cnt = 0;
+	rec_confirm_cnt = 0;
+	rec_wireless_check_cnt = 0;
+	rec_wireless_event_cnt = 0;
+	rec_wireless_recover_cnt = 0;
+	rec_wireless_confirm_cnt = 0;
+	rec_wireless_suppress_cnt = 0;
+	rec_wireless_blocked_cnt = 0;
+	rec_wireless_last_count = 0;
+	rec_wireless_radio[0] = 0;
+	rec_wireless_action[0] = 0;
+	rec_wireless_reason[0] = 0;
+	rec_wireless_section[0] = 0;
+	rec_wireless_ifname[0] = 0;
 }
 
 void

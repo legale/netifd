@@ -23,6 +23,7 @@ enum reconcile_reason {
 	REC_REASON_DEVICE_EVENT,
 	REC_REASON_HOTPLUG,
 	REC_REASON_WIRELESS_CHECK,
+	REC_REASON_MANUAL,
 };
 
 struct reconcile_config {
@@ -44,6 +45,7 @@ void reconcile_init(void);
 void reconcile_schedule(enum reconcile_reason reason);
 void reconcile_config_load(struct uci_section *globals);
 void reconcile_dump_status(struct blob_buf *b);
+void reconcile_reset_status(void);
 bool reconcile_wireless_recover_enabled(void);
 void reconcile_wireless_event(const char *radio, const char *action,
 				      const char *reason, const char *section,
