@@ -161,6 +161,21 @@ Forbidden actions:
 - no manual bridge/vlan/device creation outside existing handlers;
 - no proto-specific private recovery.
 
+Required guards before any action:
+
+- per-interface action backoff;
+- max failure limit;
+- temporary suppression after repeated failures;
+- compact logs for performed, suppressed and blocked actions.
+
+Current implementation status:
+
+- stage 2 is in progress;
+- `IFS_DOWN` + `want_up` may call the existing `interface_set_up()` path;
+- repeated soft actions are guarded by per-interface backoff and suppression;
+- wireless check is coalesced through `netifd_ucode_check_network_enabled()`;
+- all other mismatches still log only `action=none`.
+
 ## Stage 3: stuck setup recovery
 
 Track setup age.
