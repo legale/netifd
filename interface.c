@@ -25,6 +25,7 @@
 #include "ubus.h"
 #include "ucode.h"
 #include "config.h"
+#include "reconcile.h"
 #include "system.h"
 
 struct vlist_tree interfaces;
@@ -285,6 +286,8 @@ interface_event(struct interface *iface, enum interface_event ev)
 
 	list_for_each_entry_safe(dep, tmp, &iface_all_users, list)
 		dep->cb(dep, iface, ev);
+
+	reconcile_schedule(REC_REASON_IFACE_EVENT);
 
 	switch (ev) {
 	case IFEV_UP:
@@ -663,6 +666,8 @@ interface_alias_cb(struct interface_user *dep, struct interface *iface, enum int
 {
 	struct interface *alias = container_of(dep, struct interface, parent_iface);
 	struct device *dev = iface->l3_dev.dev;
+
+	reconcile_schedule(REC_REASON_IFACE_EVENT);
 
 	switch (ev) {
 	case IFEV_UP:

@@ -29,6 +29,8 @@ rec_reason_name(enum reconcile_reason reason)
 		return "init";
 	case REC_REASON_PERIODIC:
 		return "periodic";
+	case REC_REASON_IFACE_EVENT:
+		return "iface_event";
 	default:
 		return "unknown";
 	}

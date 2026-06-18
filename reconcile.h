@@ -12,6 +12,7 @@
 enum reconcile_reason {
 	REC_REASON_INIT,
 	REC_REASON_PERIODIC,
+	REC_REASON_IFACE_EVENT,
 };
 
 void reconcile_init(void);
