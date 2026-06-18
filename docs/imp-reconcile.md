@@ -226,7 +226,7 @@ Recovery must remain opt-in until tested on target hardware.
 
 ## Stage 4: missing wireless vif recovery
 
-Implementation status: initial wireless-specific recovery is implemented.
+Implementation status: wireless-specific recovery is implemented and hardened.
 
 Problem solved by this stage: a radio has many configured wifi interfaces, the
 radio setup reaches `up`, but one expected vif/vlan is missing. A full
@@ -260,13 +260,18 @@ Safety guards:
 - only runs when the wireless device state is `up`;
 - only runs for autostart wireless devices;
 - skips vifs whose target network is known and disabled;
+- grace window after radio reaches `up`;
+- persistent-missing confirmation before recovery;
 - per-radio backoff;
 - failure limit;
-- suppression window after repeated failures.
+- suppression window after repeated failures;
+- no recovery while setup retry has already failed.
 
 Expected log examples:
 
 ```text
+reconcile: wireless=radio0 action=none reason=recover_grace age=2
+reconcile: wireless=radio0 action=none reason=recover_confirm age=0 section=wifi1 ifname=wlan0-2
 reconcile: wireless=radio0 action=teardown_setup reason=missing_handler_data section=wifi0 ifname=(null) count=1
 reconcile: wireless=radio0 action=teardown_setup reason=missing_kernel_ifname section=wifi1 ifname=wlan0-2 count=1
 reconcile: wireless=radio0 action=suppress reason=recover_backoff section=wifi1 ifname=wlan0-2
@@ -276,6 +281,15 @@ reconcile: wireless=radio0 action=blocked reason=recover_fail_limit section=wifi
 This replaces the practical effect of `service wpad restart` for the common case
 where only one vif or vlan was missed, while keeping the blast radius limited to
 the affected wireless device.
+
+Stage 4 completion criteria:
+
+- missing vif/vlan is detected from handler data and kernel ifindex;
+- disabled vif/vlan does not trigger recovery;
+- recovery waits after radio `up`;
+- recovery requires the same missing object to remain missing across checks;
+- repeated recovery is rate-limited and eventually suppressed;
+- recovery uses only existing wireless teardown/setup path.
 
 ## Stage 5: optional escalation
 
