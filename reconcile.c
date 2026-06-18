@@ -17,6 +17,7 @@
 #define REC_DELAY_MS		1000
 #define REC_PERIOD_MS		10000
 #define REC_SETUP_WARN_SEC	45
+#define REC_SETUP_RESTART_SEC	60
 #define REC_ACTION_BACKOFF_SEC	15
 #define REC_ACTION_SUPPRESS_SEC	60
 #define REC_FAIL_LIMIT		3
@@ -27,6 +28,10 @@
 
 #ifndef REC_ENABLE_WIRELESS_CHECK
 #define REC_ENABLE_WIRELESS_CHECK	REC_ENABLE_ACTIONS
+#endif
+
+#ifndef REC_ENABLE_SETUP_RESTART
+#define REC_ENABLE_SETUP_RESTART	0
 #endif
 
 static struct uloop_timeout rec_timer;
@@ -182,6 +187,35 @@ rec_iface_action_ifup(struct interface *iface, const char *dev,
 }
 
 static void
+rec_iface_action_restart(struct interface *iface, const char *dev,
+			 const char *l3, const char *reason, unsigned int age)
+{
+	time_t now;
+	int ret;
+
+	if (!REC_ENABLE_SETUP_RESTART) {
+		rec_iface_log(iface, dev, l3, "none", reason, 0, age);
+		return;
+	}
+
+	now = system_get_rtime();
+	if (!rec_iface_action_allowed(iface, dev, l3, reason, now))
+		return;
+
+	ret = interface_restart(iface);
+	if (ret) {
+		iface->rec_fail_cnt++;
+		rec_iface_action_save(iface, "restart_failed", reason, now);
+		rec_iface_log(iface, dev, l3, "restart_failed", reason, 0, age);
+		return;
+	}
+
+	iface->rec_fail_cnt++;
+	rec_iface_action_save(iface, "restart", reason, now);
+	rec_iface_log(iface, dev, l3, "restart", reason, 0, age);
+}
+
+static void
 rec_iface_check(struct interface *iface)
 {
 	struct device *dev = iface->main_dev.dev;
@@ -224,9 +258,12 @@ rec_iface_check(struct interface *iface)
 		if (now > iface->setup_time)
 			age = now - iface->setup_time;
 
-		if (age >= REC_SETUP_WARN_SEC)
-			rec_iface_log(iface, dev_name, l3_name, "none", "setup_timeout",
-				      0, age);
+		if (age >= REC_SETUP_RESTART_SEC)
+			rec_iface_action_restart(iface, dev_name, l3_name,
+					       "setup_timeout", age);
+		else if (age >= REC_SETUP_WARN_SEC)
+			rec_iface_log(iface, dev_name, l3_name, "none",
+				      "setup_timeout", 0, age);
 		return;
 	}
 
