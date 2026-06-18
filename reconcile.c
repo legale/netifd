@@ -20,6 +20,7 @@
 static struct uloop_timeout rec_timer;
 static enum reconcile_reason rec_reason;
 static bool rec_pending;
+static bool rec_inited;
 
 static const char *
 rec_reason_name(enum reconcile_reason reason)
@@ -29,8 +30,18 @@ rec_reason_name(enum reconcile_reason reason)
 		return "init";
 	case REC_REASON_PERIODIC:
 		return "periodic";
+	case REC_REASON_CONFIG:
+		return "config";
 	case REC_REASON_IFACE_EVENT:
 		return "iface_event";
+	case REC_REASON_IFACE_ACTION:
+		return "iface_action";
+	case REC_REASON_DEVICE_EVENT:
+		return "device_event";
+	case REC_REASON_HOTPLUG:
+		return "hotplug";
+	case REC_REASON_WIRELESS_CHECK:
+		return "wireless_check";
 	default:
 		return "unknown";
 	}
@@ -158,6 +169,9 @@ rec_timeout_cb(struct uloop_timeout *t)
 void
 reconcile_schedule(enum reconcile_reason reason)
 {
+	if (!rec_inited)
+		return;
+
 	rec_reason = reason;
 
 	if (rec_pending)
@@ -171,5 +185,6 @@ void
 reconcile_init(void)
 {
 	rec_timer.cb = rec_timeout_cb;
+	rec_inited = true;
 	reconcile_schedule(REC_REASON_INIT);
 }

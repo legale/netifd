@@ -26,6 +26,7 @@
 #include "config.h"
 #include "ucode.h"
 #include "ubus.h"
+#include "reconcile.h"
 
 static struct list_head devtypes = LIST_HEAD_INIT(devtypes);
 static struct avl_tree devices;
@@ -693,6 +694,9 @@ void __device_broadcast_event(struct device *dev, enum device_event ev)
 	safe_list_for_each(&dev->users, device_broadcast_cb, &dev_ev);
 
 	switch (ev) {
+	case DEV_EVENT_UPDATE_IFINDEX:
+		reconcile_schedule(REC_REASON_DEVICE_EVENT);
+		return;
 	case DEV_EVENT_ADD:
 	case DEV_EVENT_REMOVE:
 	case DEV_EVENT_UP:
@@ -701,6 +705,7 @@ void __device_broadcast_event(struct device *dev, enum device_event ev)
 	case DEV_EVENT_LINK_UP:
 	case DEV_EVENT_LINK_DOWN:
 	case DEV_EVENT_TOPO_CHANGE:
+		reconcile_schedule(REC_REASON_DEVICE_EVENT);
 		break;
 	default:
 		return;
@@ -1614,6 +1619,7 @@ void device_hotplug_event(const char *name, bool add)
 	struct device *dev;
 
 	netifd_ucode_hotplug_event(name, add);
+	reconcile_schedule(REC_REASON_HOTPLUG);
 
 	dev = device_find(name);
 	if (!dev || dev->type != &simple_device_type)

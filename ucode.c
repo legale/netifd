@@ -19,6 +19,7 @@
 #include "interface.h"
 #include "ucode.h"
 #include "proto-ucode.h"
+#include "reconcile.h"
 
 uc_vm_t vm;
 static uc_value_t *netifd_obj;
@@ -235,6 +236,7 @@ void netifd_ucode_config_load(bool start)
 void netifd_ucode_check_network_enabled(void)
 {
 	netifd_call_cb("check_interfaces", 0);
+	reconcile_schedule(REC_REASON_WIRELESS_CHECK);
 }
 
 void netifd_ucode_hotplug_event(const char *name, bool add)

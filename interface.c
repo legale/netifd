@@ -1291,6 +1291,7 @@ interface_set_up(struct interface *iface)
 
 	iface->autostart = true;
 	netifd_ucode_check_network_enabled();
+	reconcile_schedule(REC_REASON_IFACE_ACTION);
 
 	if (iface->state != IFS_DOWN)
 		return;
@@ -1324,6 +1325,7 @@ interface_set_down(struct interface *iface)
 	} else {
 		iface->autostart = false;
 		netifd_ucode_check_network_enabled();
+		reconcile_schedule(REC_REASON_IFACE_ACTION);
 		__interface_set_down(iface, false);
 	}
 }

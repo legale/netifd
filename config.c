@@ -29,6 +29,7 @@
 #include "ubus.h"
 #include "system.h"
 #include "ucode.h"
+#include "reconcile.h"
 
 bool config_init = false;
 
@@ -825,6 +826,7 @@ config_init_all(void)
 	interface_refresh_assignments(false);
 	interface_start_pending();
 	netifd_ucode_config_load(true);
+	reconcile_schedule(REC_REASON_CONFIG);
 
 	return ret;
 }
