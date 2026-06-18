@@ -170,13 +170,20 @@ Required guards before any action:
 
 Implementation status: completed.
 
-Stage 2 is implemented as an opt-in recovery mode. By default, the reconciler
-still behaves as audit-only code and logs mismatches with `action=none`.
+Stage 2 is enabled by default. It can be disabled at build time or at runtime.
 
 Build-time control:
 
 ```sh
-cmake -DRECONCILE_ACTIONS=ON ...
+cmake -DRECONCILE_ACTIONS=OFF ...
+```
+
+Runtime control:
+
+```sh
+uci set network.globals.reconcile_actions='0'
+uci commit network
+service network reload
 ```
 
 When action mode is enabled:
@@ -189,21 +196,23 @@ When action mode is enabled:
 When action mode is disabled:
 
 - no interface setup is called by the reconciler;
-- no wireless check is called by the reconciler;
-- stage 1 audit behavior is preserved.
+- stage 1 audit behavior is preserved for generic interface actions.
 
 ## Stage 3: stuck setup recovery
 
-Implementation status: completed, opt-in.
+Implementation status: completed.
 
 Setup age is tracked through `iface->setup_time`. The reconciler warns about
-stuck setup in audit mode and can optionally restart only the affected interface
-through the existing `interface_restart()` path.
+stuck setup and can restart only the affected interface through the existing
+`interface_restart()` path.
 
-This recovery is disabled by default and requires an explicit build option:
+This recovery is enabled by default. It can be disabled at build time or at runtime:
 
 ```sh
-cmake -DRECONCILE_SETUP_RESTART=ON ...
+cmake -DRECONCILE_SETUP_RESTART=OFF ...
+uci set network.globals.reconcile_setup_restart='0'
+uci commit network
+service network reload
 ```
 
 Stage 3 action:
@@ -235,7 +244,7 @@ reconcile: iface=wan want=up state=setup dev=eth0 l3=(null) ifindex=0 age=61 act
 reconcile: iface=wan want=up state=setup dev=eth0 l3=(null) ifindex=0 age=66 action=restart reason=setup_timeout trigger=periodic
 ```
 
-Recovery remains opt-in until tested on target hardware.
+Recovery is enabled by default, but remains guarded by setup generation, confirmation delay, backoff, fail limit and suppression.
 
 ## Stage 4: missing wireless vif recovery
 
@@ -305,17 +314,50 @@ Stage 4 completion criteria: completed.
 - repeated recovery is rate-limited and eventually suppressed;
 - recovery uses only existing wireless teardown/setup path.
 
-## Stage 5: optional escalation
+## Stage 5: runtime control and visibility
 
-Escalation is disabled by default.
+Implementation status: completed.
 
-Possible later actions:
+The reconciler now has runtime configuration under `network.globals`. Defaults are enabled so the improved netifd is self-healing immediately after installation. Runtime options can disable or tune recovery without rebuilding.
 
-- retry one wireless device through the existing wireless ucode handler;
-- expose diagnostic counters through additive ubus status fields;
-- add a debug-only ubus method to trigger reconcile manually.
+Runtime options:
 
-Full `wpad` restart must not be a default netifd action.
+```text
+option reconcile_enabled '1'
+option reconcile_actions '1'
+option reconcile_setup_restart '1'
+option reconcile_wireless_recover '1'
+option reconcile_delay_sec '1'
+option reconcile_period_sec '10'
+option reconcile_setup_warn_sec '45'
+option reconcile_setup_restart_sec '60'
+option reconcile_setup_confirm_sec '5'
+option reconcile_action_backoff_sec '15'
+option reconcile_action_suppress_sec '60'
+option reconcile_fail_limit '3'
+```
+
+Status is exposed through ubus:
+
+```sh
+ubus call network reconcile_status
+```
+
+Status fields include enabled flags, pending state, last trigger/action/reason, run count, wireless check count and all active timing/failure limits.
+
+Build-time defaults are also enabled:
+
+```sh
+cmake -DRECONCILE_ACTIONS=ON -DRECONCILE_SETUP_RESTART=ON -DRECONCILE_WIRELESS_RECOVER=ON ...
+```
+
+Any default can still be compiled out:
+
+```sh
+cmake -DRECONCILE_ACTIONS=OFF -DRECONCILE_SETUP_RESTART=OFF -DRECONCILE_WIRELESS_RECOVER=OFF ...
+```
+
+Full `wpad` restart is still not a netifd action.
 
 ## Prevention and detection
 
