@@ -695,7 +695,8 @@ void __device_broadcast_event(struct device *dev, enum device_event ev)
 
 	switch (ev) {
 	case DEV_EVENT_UPDATE_IFINDEX:
-		reconcile_schedule(REC_REASON_DEVICE_EVENT);
+		reconcile_schedule(dev->wireless && !dev->ifindex ?
+			REC_REASON_WIRELESS_DEVICE : REC_REASON_DEVICE_EVENT);
 		return;
 	case DEV_EVENT_ADD:
 	case DEV_EVENT_REMOVE:
@@ -705,7 +706,8 @@ void __device_broadcast_event(struct device *dev, enum device_event ev)
 	case DEV_EVENT_LINK_UP:
 	case DEV_EVENT_LINK_DOWN:
 	case DEV_EVENT_TOPO_CHANGE:
-		reconcile_schedule(REC_REASON_DEVICE_EVENT);
+		reconcile_schedule(dev->wireless && ev == DEV_EVENT_REMOVE ?
+			REC_REASON_WIRELESS_DEVICE : REC_REASON_DEVICE_EVENT);
 		break;
 	default:
 		return;

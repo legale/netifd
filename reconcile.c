@@ -210,6 +210,8 @@ rec_reason_name(enum reconcile_reason reason)
 		return "iface_action";
 	case REC_REASON_DEVICE_EVENT:
 		return "device_event";
+	case REC_REASON_WIRELESS_DEVICE:
+		return "wireless_device";
 	case REC_REASON_HOTPLUG:
 		return "hotplug";
 	case REC_REASON_WIRELESS_CHECK:
@@ -486,6 +488,7 @@ rec_reason_needs_wireless_check(enum reconcile_reason reason)
 	case REC_REASON_PERIODIC:
 	case REC_REASON_CONFIG:
 	case REC_REASON_DEVICE_EVENT:
+	case REC_REASON_WIRELESS_DEVICE:
 	case REC_REASON_HOTPLUG:
 	case REC_REASON_MANUAL:
 		return true;
@@ -551,6 +554,12 @@ rec_timeout_cb(struct uloop_timeout *t)
 	rec_run();
 }
 
+static bool
+rec_reason_is_fast(enum reconcile_reason reason)
+{
+	return reason == REC_REASON_WIRELESS_DEVICE;
+}
+
 void
 reconcile_schedule(enum reconcile_reason reason)
 {
@@ -569,7 +578,8 @@ reconcile_schedule(enum reconcile_reason reason)
 		return;
 
 	rec_pending = true;
-	uloop_timeout_set(&rec_timer, (rec_cfg.delay_sec * 1000));
+	uloop_timeout_set(&rec_timer, rec_reason_is_fast(reason) ?
+		0 : (rec_cfg.delay_sec * 1000));
 }
 
 

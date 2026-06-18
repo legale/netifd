@@ -413,6 +413,46 @@ j='{"iface":"cwlan0_60"}'; ssh root@10.11.11.100 "ubus call hostapd config_remov
 Expected and observed result: reconcile recovered the missing wireless runtime
 state without running `service wpad restart`.
 
+## Stage 7: C-side fast wireless trigger
+
+Status: completed.
+
+Goal: reduce recovery latency when C netifd already observes that a known
+wireless netdev disappeared.
+
+This stage does not add a new recovery path. It only wakes the existing wireless
+check path faster.
+
+Implemented behavior:
+
+- when a wireless device broadcasts `DEV_EVENT_REMOVE`, C schedules reconcile
+  with trigger `wireless_device`;
+- when a wireless device updates ifindex to `0`, C schedules reconcile with
+  trigger `wireless_device`;
+- `wireless_device` trigger is scheduled immediately, without waiting
+  `reconcile_delay_sec`;
+- the reconcile pass then calls `netifd_ucode_check_network_enabled()` if
+  wireless recovery is enabled;
+- the decision to run teardown/setup still belongs to live `wireless-device.uc`;
+- C does not call `service wpad restart`, does not run hostapd commands and does
+  not parse wireless config.
+
+Why this is safe:
+
+- C only shortens the delay between kernel/netifd device loss and the normal
+  wireless `check_interfaces()` pass;
+- unknown wifi-iface recovery still remains in live `wireless-device.uc`, where
+  `data.vif` and `handler_data` are visible;
+- if wireless recovery is disabled at runtime, the fast trigger does not execute
+  recovery.
+
+Expected log/status effect:
+
+- `ubus call network reconcile_status` may show `last_trigger=wireless_device`;
+- `wireless_check_count` increases immediately after a known wireless netdev
+  remove / ifindex=0 event;
+- actual recovery is still reported by the wireless recovery logs.
+
 ## Stage 8: deployment boundary and live wireless ucode patch
 
 Status: completed.
@@ -431,16 +471,129 @@ Why this is necessary:
   existing teardown/setup handler path;
 - therefore the missing handler data check belongs in live wireless ucode.
 
+Concrete runtime files:
+
+- Required: the real `wireless-device.uc` installed on the target. This is the
+  file that contains `function check()`, `function wdev_mark_up(wdev)`,
+  `function wdev_reset(wdev)`, `function wdev_update_disabled_vifs(wdev)`,
+  `wdev.handler_data` and `wdev.data.vif`.
+- Usually unchanged: the real `main.uc`, if it already exports
+  `check_interfaces()` and calls `wireless.check_interfaces()`.
+- Usually unchanged: the real `wireless.uc`, if its `check_interfaces()` already
+  iterates over autostart wireless devices and calls `dev.check()`.
+- Not required: `proto.uc`, `proto-ucode.uc`, `utils.uc`, packet steering ucode
+  and protocol handlers.
+
+Required call chain:
+
+```text
+C netifd
+  -> netifd_ucode_check_network_enabled()
+  -> main.uc: check_interfaces()
+  -> wireless.uc: check_interfaces()
+  -> wireless-device.uc: dev.check()
+  -> wdev_recover_missing_interfaces()
+```
+
+If the target already has this chain up to `dev.check()`, only the live
+`wireless-device.uc` must be patched.
+
+Required C side support, already implemented in this netifd tree:
+
+- `netifd.device_ifindex(ifname)` must be available to ucode. It is used by
+  live `wireless-device.uc` to detect that `handler_data` still says a vif
+  should exist but the kernel netdev has disappeared.
+- `netifd.reconcile_wireless_recover` must be available to ucode. It is the
+  runtime enable flag that lets netifd disable wireless recovery without
+  changing the script.
+- C reconciler must call `netifd_ucode_check_network_enabled()`. This wakes the
+  existing ucode `check_interfaces()` chain.
+
 Required live `wireless-device.uc` changes are intentionally limited:
 
-- fix the disabled-vif key bug: `disabled[wdev] = true` must become
-  `disabled[name] = true`;
-- add `wdev_recover_missing_interfaces()` and its small helper state;
-- in `check()`, when `wdev_update_disabled_vifs()` reports no config change,
-  call `wdev_recover_missing_interfaces(this)` before returning;
-- in `wdev_mark_up()`, store `wdev.recover_up_time = time()`;
-- in `wdev_reset()`, clear recovery state;
-- do not add telemetry calls to live ucode unless needed.
+1. Fix the disabled-vif key bug.
+
+Before:
+
+```ucode
+disabled[wdev] = true;
+```
+
+After:
+
+```ucode
+disabled[name] = true;
+```
+
+Without this fix, disabled vifs are stored under the radio object key, while the
+rest of the code checks `wdev.disabled_vifs[vif.name]`. Recovery may then try to
+restore a vif that should be disabled.
+
+2. Add recovery constants near existing wireless constants:
+
+```ucode
+const RECOVER_BACKOFF = 15;
+const RECOVER_SUPPRESS = 60;
+const RECOVER_FAIL_LIMIT = 3;
+const RECOVER_GRACE = 5;
+const RECOVER_CONFIRM = 3;
+```
+
+3. Add the recovery helpers next to the existing wdev helper functions:
+
+- `wdev_recover_reset(wdev)`;
+- `wdev_missing_data(wdev, key, section)`;
+- `wdev_vif_wanted(vif)`;
+- `wdev_find_missing_interface(wdev)`;
+- `wdev_recover_allowed(wdev, missing)`;
+- `wdev_recover_in_grace(wdev)`;
+- `wdev_recover_confirmed(wdev, missing)`;
+- `wdev_recover_missing_interfaces(wdev)`.
+
+These helpers must only inspect `wdev.data.vif`, `wdev.disabled_vifs`,
+`wdev.handler_data`, `wdev.state`, `wdev.autostart`, `wdev.retry_setup_failed`
+and `netifd.device_ifindex(ifname)`. They must not call `service`, `hostapd`,
+`wifi`, `ubus hostapd`, or parse UCI.
+
+4. Replace `check()` with the guarded recovery call when there is no config
+change:
+
+```ucode
+function check()
+{
+	if (!wdev_update_disabled_vifs(this)) {
+		wdev_recover_missing_interfaces(this);
+		return;
+	}
+
+	wdev_config_init(this);
+	this.setup();
+}
+```
+
+5. In `wdev_mark_up(wdev)`, after `wdev.state = "up";`, store radio up time:
+
+```ucode
+wdev.recover_up_time = time();
+```
+
+This prevents false recovery immediately after a normal radio setup.
+
+6. In `wdev_reset(wdev)`, clear recovery state:
+
+```ucode
+wdev_recover_reset(wdev);
+```
+
+7. The recovery action must be only the existing radio teardown/setup path:
+
+```ucode
+wdev_proc_reset(wdev);
+wdev.state = "teardown";
+run_handler(wdev, "teardown", wdev_teardown_cb);
+```
+
+Do not run `service wpad restart`.
 
 Optional telemetry:
 
@@ -548,6 +701,7 @@ Included stages:
 - Stage 4: missing wireless vif recovery;
 - Stage 5: runtime controls and status;
 - Stage 6: production visibility;
+- Stage 7: C-side fast wireless trigger;
 - Stage 8: live wireless ucode deployment boundary;
 - Stage 9: post-hardware-test hardening;
 - Stage 10: manual ubus operation hooks.
@@ -590,8 +744,6 @@ recovery loops.
 Next work after hardware validation only:
 
 - tune delays/backoff from real logs;
-- decide whether C-side fast trigger for known wireless netdev deletion is
-  needed;
 - decide whether optional wireless telemetry should be added to the live ucode
   package;
 - avoid adding new recovery stages until the milestone is validated.
