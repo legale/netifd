@@ -413,8 +413,7 @@ function wdev_recover_in_grace(wdev)
 		return false;
 
 	netifd.log(netifd.L_NOTICE,
-		`reconcile: wireless=${wdev.name} action=none reason=recover_grace age=${now - wdev.recover_up_time}
-`);
+		`reconcile: wireless=${wdev.name} action=none reason=recover_grace age=${now - wdev.recover_up_time}\n`);
 	return true;
 }
 
@@ -429,8 +428,7 @@ function wdev_recover_confirmed(wdev, missing)
 			return true;
 
 		netifd.log(netifd.L_NOTICE,
-			`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=${now - pending.since} section=${missing.section} ifname=${missing.ifname}
-`);
+			`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=${now - pending.since} section=${missing.section} ifname=${missing.ifname}\n`);
 		return false;
 	}
 
@@ -442,8 +440,7 @@ function wdev_recover_confirmed(wdev, missing)
 	};
 
 	netifd.log(netifd.L_NOTICE,
-		`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=0 section=${missing.section} ifname=${missing.ifname}
-`);
+		`reconcile: wireless=${wdev.name} action=none reason=recover_confirm age=0 section=${missing.section} ifname=${missing.ifname}\n`);
 	return false;
 }
 
