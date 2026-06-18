@@ -497,6 +497,41 @@ Completed items:
 The stage does not add new recovery actions. It only makes existing controls
 and scheduling behavior less surprising.
 
+## Stage 10: manual operation hooks
+
+Status: completed.
+
+This stage adds small ubus controls for field testing. It does not add new
+recovery actions and does not change automatic behavior.
+
+New commands:
+
+```sh
+ubus call network reconcile_run
+ubus call network reconcile_reset_status
+ubus call network reconcile_status
+```
+
+`reconcile_run` schedules one reconcile pass with trigger `manual`. It is useful
+after fault injection, for example after deleting a wireless vif or after a
+`hostapd config_remove` test.
+
+`reconcile_reset_status` clears runtime counters and last-event fields only. It
+does not reset per-interface backoff, suppression, wireless state, interface
+state, device state or proto state.
+
+Expected workflow:
+
+```sh
+ubus call network reconcile_reset_status
+j='{ "iface": "cwlan1_60" }'; ubus call hostapd config_remove "$j"
+ubus call network reconcile_run
+ubus call network reconcile_status
+```
+
+The stage is successful when the manual trigger helps tests converge faster but
+all recovery decisions still pass through the existing reconcile guards.
+
 ## Prevention and detection
 
 Prevention:
