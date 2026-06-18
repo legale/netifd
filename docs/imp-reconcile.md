@@ -168,13 +168,29 @@ Required guards before any action:
 - temporary suppression after repeated failures;
 - compact logs for performed, suppressed and blocked actions.
 
-Current implementation status:
+Implementation status: completed.
 
-- stage 2 is in progress;
-- `IFS_DOWN` + `want_up` may call the existing `interface_set_up()` path;
+Stage 2 is implemented as an opt-in recovery mode. By default, the reconciler
+still behaves as audit-only code and logs mismatches with `action=none`.
+
+Build-time control:
+
+```sh
+cmake -DRECONCILE_ACTIONS=ON ...
+```
+
+When action mode is enabled:
+
+- `IFS_DOWN` + `want_up` calls the existing `interface_set_up()` path;
 - repeated soft actions are guarded by per-interface backoff and suppression;
 - wireless check is coalesced through `netifd_ucode_check_network_enabled()`;
 - all other mismatches still log only `action=none`.
+
+When action mode is disabled:
+
+- no interface setup is called by the reconciler;
+- no wireless check is called by the reconciler;
+- stage 1 audit behavior is preserved.
 
 ## Stage 3: stuck setup recovery
 
