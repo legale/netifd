@@ -102,7 +102,6 @@ rec_iface_check(struct interface *iface)
 	const char *dev_name = dev ? dev->ifname : "(null)";
 	const char *l3_name = l3 ? l3->ifname : "(null)";
 	unsigned int age = 0;
-	int ifindex = 0;
 	time_t now;
 
 	if (!rec_iface_want_up(iface))
@@ -111,12 +110,25 @@ rec_iface_check(struct interface *iface)
 	if (iface->state == IFS_TEARDOWN)
 		return;
 
+	if (iface->main_dev.claimed && dev && !dev->present) {
+		rec_iface_log(iface, dev_name, l3_name, "claimed_dev_missing", 0, 0);
+		return;
+	}
+
+	if (iface->l3_dev.claimed && l3 && !l3->present) {
+		rec_iface_log(iface, dev_name, l3_name, "claimed_l3_missing", 0, 0);
+		return;
+	}
+
 	if (iface->state != IFS_UP && iface->state != IFS_SETUP) {
 		rec_iface_log(iface, dev_name, l3_name, "not_up", 0, 0);
 		return;
 	}
 
-	if (iface->state == IFS_SETUP && iface->setup_time) {
+	if (iface->state == IFS_SETUP) {
+		if (!iface->setup_time)
+			return;
+
 		now = system_get_rtime();
 		if (now > iface->setup_time)
 			age = now - iface->setup_time;
@@ -140,8 +152,7 @@ rec_iface_check(struct interface *iface)
 		return;
 	}
 
-	ifindex = system_if_resolve(dev);
-	if (!ifindex)
+	if (!system_if_resolve(dev))
 		rec_iface_log(iface, dev_name, l3_name, "missing_ifindex", 0, 0);
 }
 
