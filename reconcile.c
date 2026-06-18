@@ -18,6 +18,7 @@
 #define REC_PERIOD_MS		10000
 #define REC_SETUP_WARN_SEC	45
 #define REC_SETUP_RESTART_SEC	60
+#define REC_SETUP_CONFIRM_SEC	5
 #define REC_ACTION_BACKOFF_SEC	15
 #define REC_ACTION_SUPPRESS_SEC	60
 #define REC_FAIL_LIMIT		3
@@ -132,6 +133,8 @@ rec_iface_action_reset(struct interface *iface)
 {
 	iface->rec_fail_cnt = 0;
 	iface->rec_suppress_until = 0;
+	iface->rec_setup_time = 0;
+	iface->rec_setup_confirm = 0;
 	iface->rec_last_reason = NULL;
 	iface->rec_last_action_name = NULL;
 }
@@ -203,9 +206,26 @@ rec_iface_action_restart(struct interface *iface, const char *dev,
 	}
 
 	now = system_get_rtime();
+	if (iface->rec_setup_time != iface->setup_time) {
+		iface->rec_setup_time = iface->setup_time;
+		iface->rec_setup_confirm = now;
+		rec_iface_log(iface, dev, l3, "none", "setup_confirm", 0, age);
+		return;
+	}
+
+	if (!iface->rec_setup_confirm)
+		iface->rec_setup_confirm = now;
+
+	if (now < iface->rec_setup_confirm + REC_SETUP_CONFIRM_SEC) {
+		rec_iface_log(iface, dev, l3, "none", "setup_confirm", 0, age);
+		return;
+	}
+
 	if (!rec_iface_action_allowed(iface, dev, l3, reason, now))
 		return;
 
+	iface->rec_setup_time = 0;
+	iface->rec_setup_confirm = 0;
 	ret = interface_restart(iface);
 	if (ret) {
 		iface->rec_fail_cnt++;
@@ -246,6 +266,8 @@ rec_iface_check(struct interface *iface)
 	}
 
 	if (iface->state != IFS_UP && iface->state != IFS_SETUP) {
+		iface->rec_setup_time = 0;
+		iface->rec_setup_confirm = 0;
 		if (iface->state == IFS_DOWN)
 			rec_iface_action_ifup(iface, dev_name, l3_name, "not_up");
 		else
@@ -255,8 +277,11 @@ rec_iface_check(struct interface *iface)
 	}
 
 	if (iface->state == IFS_SETUP) {
-		if (!iface->setup_time)
+		if (!iface->setup_time) {
+			iface->rec_setup_time = 0;
+			iface->rec_setup_confirm = 0;
 			return;
+		}
 
 		now = system_get_rtime();
 		if (now > iface->setup_time)
@@ -268,8 +293,15 @@ rec_iface_check(struct interface *iface)
 		else if (age >= REC_SETUP_WARN_SEC)
 			rec_iface_log(iface, dev_name, l3_name, "none",
 				      "setup_timeout", 0, age);
+		else {
+			iface->rec_setup_time = 0;
+			iface->rec_setup_confirm = 0;
+		}
 		return;
 	}
+
+	iface->rec_setup_time = 0;
+	iface->rec_setup_confirm = 0;
 
 	if (!l3) {
 		rec_iface_log(iface, dev_name, l3_name, "none", "missing_l3", 0, 0);

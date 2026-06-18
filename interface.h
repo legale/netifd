@@ -133,6 +133,8 @@ struct interface {
 	time_t setup_time;
 	time_t rec_last_action;
 	time_t rec_suppress_until;
+	time_t rec_setup_time;
+	time_t rec_setup_confirm;
 	unsigned int rec_fail_cnt;
 	const char *rec_last_action_name;
 	const char *rec_last_reason;
