@@ -138,6 +138,10 @@ reconcile: iface=wifi0 want=up state=up dev=wlan0 ifindex=0 action=none reason=m
 Stage 1 is successful when it can run on a live AP without changing network
 state and without producing constant false positives on a stable system.
 
+Status: completed in audit-only mode. The implementation adds coalesced scheduling,
+configuration/device/interface/hotplug/wireless triggers, setup-age tracking and
+compact mismatch logs. No recovery action is executed in this stage.
+
 ## Stage 2: safe soft reconcile
 
 Enable only low-risk actions.
