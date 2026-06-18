@@ -131,6 +131,11 @@ struct interface {
 
 	time_t start_time;
 	time_t setup_time;
+	time_t rec_last_action;
+	time_t rec_suppress_until;
+	unsigned int rec_fail_cnt;
+	const char *rec_last_action_name;
+	const char *rec_last_reason;
 	enum interface_state state;
 	enum interface_config_state config_state;
 	enum interface_update_flags updated;

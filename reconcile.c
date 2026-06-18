@@ -14,9 +14,12 @@
 #include "system.h"
 #include "ucode.h"
 
-#define REC_DELAY_MS	1000
-#define REC_PERIOD_MS	10000
+#define REC_DELAY_MS		1000
+#define REC_PERIOD_MS		10000
 #define REC_SETUP_WARN_SEC	45
+#define REC_ACTION_BACKOFF_SEC	15
+#define REC_ACTION_SUPPRESS_SEC	60
+#define REC_FAIL_LIMIT		3
 
 static struct uloop_timeout rec_timer;
 static enum reconcile_reason rec_reason;
@@ -99,6 +102,72 @@ rec_iface_log(struct interface *iface, const char *dev, const char *l3,
 }
 
 static void
+rec_iface_action_save(struct interface *iface, const char *action,
+		      const char *reason, time_t now)
+{
+	iface->rec_last_action = now;
+	iface->rec_last_action_name = action;
+	iface->rec_last_reason = reason;
+}
+
+static void
+rec_iface_action_reset(struct interface *iface)
+{
+	iface->rec_fail_cnt = 0;
+	iface->rec_suppress_until = 0;
+	iface->rec_last_reason = NULL;
+	iface->rec_last_action_name = NULL;
+}
+
+static bool
+rec_iface_action_allowed(struct interface *iface, const char *dev,
+			 const char *l3, const char *reason, time_t now)
+{
+	if (iface->rec_suppress_until) {
+		if (now < iface->rec_suppress_until) {
+			rec_iface_log(iface, dev, l3, "suppress",
+				      "action_suppressed", 0, 0);
+			return false;
+		}
+
+		iface->rec_suppress_until = 0;
+		iface->rec_fail_cnt = 0;
+	}
+
+	if (iface->rec_last_action &&
+	    now < iface->rec_last_action + REC_ACTION_BACKOFF_SEC) {
+		rec_iface_log(iface, dev, l3, "suppress", "action_backoff",
+			      0, 0);
+		return false;
+	}
+
+	if (iface->rec_fail_cnt >= REC_FAIL_LIMIT) {
+		iface->rec_suppress_until = now + REC_ACTION_SUPPRESS_SEC;
+		rec_iface_action_save(iface, "blocked", reason, now);
+		rec_iface_log(iface, dev, l3, "blocked", "action_fail_limit",
+			      0, 0);
+		return false;
+	}
+
+	return true;
+}
+
+static void
+rec_iface_action_ifup(struct interface *iface, const char *dev,
+		     const char *l3, const char *reason)
+{
+	time_t now = system_get_rtime();
+
+	if (!rec_iface_action_allowed(iface, dev, l3, reason, now))
+		return;
+
+	iface->rec_fail_cnt++;
+	rec_iface_action_save(iface, "ifup", reason, now);
+	rec_iface_log(iface, dev, l3, "ifup", reason, 0, 0);
+	interface_set_up(iface);
+}
+
+static void
 rec_iface_check(struct interface *iface)
 {
 	struct device *dev = iface->main_dev.dev;
@@ -125,11 +194,11 @@ rec_iface_check(struct interface *iface)
 	}
 
 	if (iface->state != IFS_UP && iface->state != IFS_SETUP) {
-		rec_iface_log(iface, dev_name, l3_name,
-			      iface->state == IFS_DOWN ? "ifup" : "none",
-			      "not_up", 0, 0);
 		if (iface->state == IFS_DOWN)
-			interface_set_up(iface);
+			rec_iface_action_ifup(iface, dev_name, l3_name, "not_up");
+		else
+			rec_iface_log(iface, dev_name, l3_name, "none",
+				      "not_up", 0, 0);
 		return;
 	}
 
@@ -160,8 +229,12 @@ rec_iface_check(struct interface *iface)
 		return;
 	}
 
-	if (!system_if_resolve(dev))
+	if (!system_if_resolve(dev)) {
 		rec_iface_log(iface, dev_name, l3_name, "none", "missing_ifindex", 0, 0);
+		return;
+	}
+
+	rec_iface_action_reset(iface);
 }
 
 static bool
