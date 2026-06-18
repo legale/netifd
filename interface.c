@@ -319,6 +319,7 @@ mark_interface_down(struct interface *iface)
 	uloop_timeout_cancel(&iface->carrier_loss_timer);
 	iface->link_up_event = false;
 	iface->state = IFS_DOWN;
+	iface->setup_time = 0;
 	switch (state) {
 	case IFS_UP:
 	case IFS_TEARDOWN:
@@ -381,6 +382,7 @@ __interface_set_up(struct interface *iface)
 	netifd_log_message(L_NOTICE, "Interface '%s' is setting up now\n", iface->name);
 
 	iface->state = IFS_SETUP;
+	iface->setup_time = system_get_rtime();
 	ret = interface_proto_event(iface->proto, PROTO_CMD_SETUP, false);
 	if (ret)
 		mark_interface_down(iface);
@@ -829,6 +831,7 @@ interface_proto_event_cb(struct interface_proto_state *state, enum interface_pro
 		interface_ip_set_enabled(&iface->proto_ip, true);
 		system_flush_routes();
 		iface->state = IFS_UP;
+		iface->setup_time = 0;
 		iface->start_time = system_get_rtime();
 		interface_event(iface, IFEV_UP);
 		netifd_log_message(L_NOTICE, "Interface '%s' is now up\n", iface->name);
@@ -853,6 +856,7 @@ interface_proto_event_cb(struct interface_proto_state *state, enum interface_pro
 		netifd_log_message(L_NOTICE, "Interface '%s' has lost the connection\n", iface->name);
 		mark_interface_down(iface);
 		iface->state = IFS_SETUP;
+		iface->setup_time = system_get_rtime();
 		break;
 	default:
 		return;
@@ -868,6 +872,7 @@ void interface_set_proto_state(struct interface *iface, struct interface_proto_s
 		iface->proto = NULL;
 	}
 	iface->state = IFS_DOWN;
+	iface->setup_time = 0;
 	iface->proto = state;
 	if (!state)
 		return;

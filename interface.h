@@ -130,6 +130,7 @@ struct interface {
 	struct uloop_timeout carrier_loss_timer;
 
 	time_t start_time;
+	time_t setup_time;
 	enum interface_state state;
 	enum interface_config_state config_state;
 	enum interface_update_flags updated;
