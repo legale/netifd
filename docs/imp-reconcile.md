@@ -194,20 +194,35 @@ When action mode is disabled:
 
 ## Stage 3: stuck setup recovery
 
-Track setup age.
+Implementation status: in progress.
 
-Add small state to `struct interface` only if needed:
+Setup age is already tracked through `iface->setup_time`. The reconciler warns
+about stuck setup in audit mode and can optionally restart only the affected
+interface through the existing `interface_restart()` path.
 
-```c
-uint64_t setup_started;
-uint64_t last_rec_action;
-unsigned int rec_fail_cnt;
+This recovery is disabled by default and requires an explicit build option:
+
+```sh
+cmake -DRECONCILE_SETUP_RESTART=ON ...
 ```
 
-If an interface stays in `IFS_SETUP` longer than the configured timeout, request
-a controlled restart through existing interface teardown/setup paths.
+Current stage 3 action:
 
-Recovery must have per-interface backoff and max failure suppression.
+- `IFS_SETUP` older than `REC_SETUP_RESTART_SEC` -> `interface_restart(iface)`;
+- no direct proto manipulation;
+- no device state change;
+- no `service network restart`;
+- no `service wpad restart`.
+
+Safety guards:
+
+- same desired-state gates as stage 2;
+- no action during `IFS_TEARDOWN`;
+- per-interface action backoff;
+- failure limit;
+- suppression window after repeated failures.
+
+Recovery must remain opt-in until tested on target hardware.
 
 ## Stage 4: missing kernel object recovery
 
