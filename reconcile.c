@@ -21,6 +21,14 @@
 #define REC_ACTION_SUPPRESS_SEC	60
 #define REC_FAIL_LIMIT		3
 
+#ifndef REC_ENABLE_ACTIONS
+#define REC_ENABLE_ACTIONS	0
+#endif
+
+#ifndef REC_ENABLE_WIRELESS_CHECK
+#define REC_ENABLE_WIRELESS_CHECK	REC_ENABLE_ACTIONS
+#endif
+
 static struct uloop_timeout rec_timer;
 static enum reconcile_reason rec_reason;
 static enum reconcile_reason rec_trigger;
@@ -156,8 +164,14 @@ static void
 rec_iface_action_ifup(struct interface *iface, const char *dev,
 		     const char *l3, const char *reason)
 {
-	time_t now = system_get_rtime();
+	time_t now;
 
+	if (!REC_ENABLE_ACTIONS) {
+		rec_iface_log(iface, dev, l3, "none", reason, 0, 0);
+		return;
+	}
+
+	now = system_get_rtime();
 	if (!rec_iface_action_allowed(iface, dev, l3, reason, now))
 		return;
 
@@ -258,6 +272,10 @@ rec_wireless_check(void)
 		return;
 
 	rec_need_wireless_check = false;
+
+	if (!REC_ENABLE_WIRELESS_CHECK)
+		return;
+
 	netifd_log_message(L_NOTICE,
 		"reconcile: action=wireless_check trigger=%s\n",
 		rec_reason_name(rec_trigger));
