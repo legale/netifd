@@ -1329,6 +1329,143 @@ struct clear_data {
 	int af;
 };
 
+struct route_check_data {
+	struct device *dev;
+	struct device_route *route;
+	int pending;
+	int ret;
+};
+
+static unsigned int
+route_check_table(struct device_route *route)
+{
+	if (route->flags & (DEVROUTE_TABLE | DEVROUTE_SRCTABLE))
+		return route->table;
+
+	return RT_TABLE_MAIN;
+}
+
+static bool
+route_check_match(struct nlmsghdr *hdr, struct route_check_data *chk)
+{
+	struct rtmsg *r = NLMSG_DATA(hdr);
+	struct nlattr *tb[__RTA_MAX];
+	struct device_route *route = chk->route;
+	int af = system_get_addr_family(route->flags);
+	int alen = system_get_addr_len(route->flags);
+	unsigned int table;
+	union if_addr addr = {};
+	union if_addr src = {};
+	union if_addr gw = {};
+
+	if (hdr->nlmsg_type != RTM_NEWROUTE)
+		return false;
+
+	if (r->rtm_family != af)
+		return false;
+
+	if (r->rtm_dst_len != route->mask)
+		return false;
+
+	nlmsg_parse(hdr, sizeof(struct rtmsg), tb, __RTA_MAX - 1, NULL);
+
+	table = r->rtm_table;
+	if (table == RT_TABLE_UNSPEC && tb[RTA_TABLE])
+		table = nla_get_u32(tb[RTA_TABLE]);
+	if (!table)
+		table = RT_TABLE_MAIN;
+	if (table != route_check_table(route))
+		return false;
+
+	if (!(route->flags & DEVROUTE_NODEV)) {
+		if (!chk->dev || !chk->dev->ifindex)
+			return false;
+
+		if (!tb[RTA_OIF] || nla_get_u32(tb[RTA_OIF]) != chk->dev->ifindex)
+			return false;
+	}
+
+	if (route->flags & DEVROUTE_TYPE) {
+		if (r->rtm_type != route->type)
+			return false;
+	}
+
+	if (route->mask) {
+		if (!tb[RTA_DST] || nla_len(tb[RTA_DST]) < alen)
+			return false;
+
+		memcpy(&addr, nla_data(tb[RTA_DST]), alen);
+		if (memcmp(&addr, &route->addr, alen))
+			return false;
+	}
+
+	if (route->sourcemask) {
+		struct nlattr *src_attr;
+
+		if (r->rtm_src_len != route->sourcemask)
+			return false;
+
+		src_attr = (af == AF_INET) ? tb[RTA_PREFSRC] : tb[RTA_SRC];
+		if (!src_attr || nla_len(src_attr) < alen)
+			return false;
+
+		memcpy(&src, nla_data(src_attr), alen);
+		if (memcmp(&src, &route->source, alen))
+			return false;
+	}
+
+	if (route->nexthop.in.s_addr || route->nexthop.in6.s6_addr32[0] ||
+	    route->nexthop.in6.s6_addr32[1] || route->nexthop.in6.s6_addr32[2] ||
+	    route->nexthop.in6.s6_addr32[3]) {
+		if (!tb[RTA_GATEWAY] || nla_len(tb[RTA_GATEWAY]) < alen)
+			return false;
+
+		memcpy(&gw, nla_data(tb[RTA_GATEWAY]), alen);
+		if (memcmp(&gw, &route->nexthop, alen))
+			return false;
+	}
+
+	if (route->metric > 0) {
+		if (!tb[RTA_PRIORITY] || nla_get_u32(tb[RTA_PRIORITY]) != route->metric)
+			return false;
+	}
+
+	return true;
+}
+
+static int
+cb_route_check_valid(struct nl_msg *msg, void *arg)
+{
+	struct nlmsghdr *nh = nlmsg_hdr(msg);
+	struct route_check_data *chk = arg;
+
+	if (route_check_match(nh, chk)) {
+		chk->ret = 0;
+		chk->pending = 0;
+	}
+
+	return NL_OK;
+}
+
+static int
+cb_route_check_ack(struct nl_msg *msg, void *arg)
+{
+	struct route_check_data *chk = arg;
+
+	chk->pending = 0;
+	return NL_STOP;
+}
+
+static int
+cb_route_check_error(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
+{
+	struct route_check_data *chk = arg;
+
+	chk->ret = err->error;
+	chk->pending = 0;
+	return NL_STOP;
+}
+
 
 static bool check_ifaddr(struct nlmsghdr *hdr, int ifindex)
 {
@@ -3082,6 +3219,60 @@ int system_if_check(struct device *dev)
 		nl_recvmsgs(sock_rtnl, cb);
 
 	ret = chk.pending;
+
+free:
+	nlmsg_free(msg);
+out:
+	nl_cb_put(cb);
+	return ret;
+}
+
+int system_route_check(struct device *dev, struct device_route *route)
+{
+	struct route_check_data chk = {
+		.dev = dev,
+		.route = route,
+		.pending = 1,
+		.ret = 1,
+	};
+	struct nl_cb *cb = nl_cb_alloc(NL_CB_DEFAULT);
+	struct nl_msg *msg;
+	struct rtmsg rtm = {
+		.rtm_family = system_get_addr_family(route->flags),
+	};
+	int ret = 1;
+
+	if (!cb)
+		return ret;
+
+	msg = nlmsg_alloc_simple(RTM_GETROUTE, NLM_F_DUMP);
+	if (!msg)
+		goto out;
+
+	if (nlmsg_append(msg, &rtm, sizeof(rtm), 0))
+		goto free;
+
+	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_route_check_valid, &chk);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_route_check_ack, &chk);
+	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, cb_route_check_ack, &chk);
+	nl_cb_err(cb, NL_CB_CUSTOM, cb_route_check_error, &chk);
+
+	ret = nl_send_auto_complete(sock_rtnl, msg);
+	if (ret < 0) {
+		ret = -1;
+		goto free;
+	}
+
+	while (chk.pending > 0) {
+		ret = nl_recvmsgs(sock_rtnl, cb);
+		if (ret < 0) {
+			ret = -1;
+			break;
+		}
+	}
+
+	if (ret >= 0)
+		ret = chk.ret;
 
 free:
 	nlmsg_free(msg);

@@ -269,6 +269,11 @@ int system_del_route(struct device *dev, struct device_route *route)
 	return system_route_msg(dev, route, "del");
 }
 
+int system_route_check(struct device *dev, struct device_route *route)
+{
+	return 0;
+}
+
 int system_flush_routes(void)
 {
 	return 0;

@@ -396,6 +396,127 @@ rec_iface_action_restart(struct interface *iface, const char *dev,
 }
 
 static void
+rec_route_name(struct device_route *route, char *buf, size_t len)
+{
+	int af = system_get_addr_family(route->flags);
+	char addr[INET6_ADDRSTRLEN];
+
+	if (!inet_ntop(af, &route->addr, addr, sizeof(addr)))
+		snprintf(addr, sizeof(addr), "(invalid)");
+
+	snprintf(buf, len, "%s/%u", addr, route->mask);
+}
+
+static void
+rec_iface_route_restart(struct interface *iface, struct device_route *route,
+			const char *dev, const char *l3)
+{
+	time_t now;
+	char name[64];
+	int ret;
+
+	rec_route_name(route, name, sizeof(name));
+
+	if (!rec_cfg.actions) {
+		rec_event_count("none", "missing_route");
+		netifd_log_message(L_NOTICE,
+			"reconcile: iface=%s route=%s dev=%s l3=%s action=none reason=missing_route trigger=%s\n",
+			iface->name, name, dev, l3, rec_reason_name(rec_trigger));
+		return;
+	}
+
+	now = system_get_rtime();
+	if (!rec_iface_action_allowed(iface, dev, l3, "missing_route", now))
+		return;
+
+	iface->rec_fail_cnt++;
+	rec_iface_action_save(iface, "restart", "missing_route", now);
+	ret = interface_restart(iface);
+	if (ret) {
+		rec_iface_action_save(iface, "restart_failed", "missing_route", now);
+		rec_event_count("restart_failed", "missing_route");
+		netifd_log_message(L_NOTICE,
+			"reconcile: iface=%s route=%s dev=%s l3=%s action=restart_failed reason=missing_route trigger=%s\n",
+			iface->name, name, dev, l3, rec_reason_name(rec_trigger));
+		return;
+	}
+
+	rec_event_count("restart", "missing_route");
+	netifd_log_message(L_NOTICE,
+		"reconcile: iface=%s route=%s dev=%s l3=%s action=restart reason=missing_route trigger=%s\n",
+		iface->name, name, dev, l3, rec_reason_name(rec_trigger));
+}
+
+static bool
+rec_iface_route_check(struct interface *iface, struct interface_ip_settings *ip,
+		      struct device_route *route, const char *dev_name,
+		      const char *l3_name)
+{
+	struct device *dev = iface->l3_dev.dev;
+	int ret;
+
+	if (!route->enabled)
+		return true;
+
+	if (ip->no_defaultroute && !route->mask)
+		return true;
+
+	ret = system_route_check(dev, route);
+	if (ret < 0) {
+		char name[64];
+
+		rec_route_name(route, name, sizeof(name));
+		rec_event_count("none", "route_check_failed");
+		netifd_log_message(L_NOTICE,
+			"reconcile: iface=%s route=%s dev=%s l3=%s action=none reason=route_check_failed trigger=%s\n",
+			iface->name, name, dev_name, l3_name, rec_reason_name(rec_trigger));
+		return true;
+	}
+
+	if (ret > 0) {
+		rec_iface_route_restart(iface, route, dev_name, l3_name);
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+rec_iface_route_list_check(struct interface *iface, struct interface_ip_settings *ip,
+			   const char *dev_name, const char *l3_name)
+{
+	struct device_route *route;
+
+	vlist_for_each_element(&ip->route, route, node) {
+		if (!route->enabled)
+			continue;
+
+		if (!rec_iface_route_check(iface, ip, route, dev_name, l3_name))
+			return false;
+	}
+
+	return true;
+}
+
+static bool
+rec_iface_host_route_list_check(struct interface *iface,
+				const char *dev_name, const char *l3_name)
+{
+	struct device_route *route;
+
+	vlist_for_each_element(&iface->host_routes, route, node) {
+		if (!route->enabled)
+			continue;
+
+		if (!rec_iface_route_check(iface, &iface->proto_ip, route,
+					   dev_name, l3_name))
+			return false;
+	}
+
+	return true;
+}
+
+static void
 rec_iface_check(struct interface *iface)
 {
 	struct device *dev = iface->main_dev.dev;
@@ -476,6 +597,15 @@ rec_iface_check(struct interface *iface)
 		rec_iface_log(iface, dev_name, l3_name, "none", "missing_ifindex", 0, 0);
 		return;
 	}
+
+	if (!rec_iface_route_list_check(iface, &iface->config_ip, dev_name, l3_name))
+		return;
+
+	if (!rec_iface_route_list_check(iface, &iface->proto_ip, dev_name, l3_name))
+		return;
+
+	if (!rec_iface_host_route_list_check(iface, dev_name, l3_name))
+		return;
 
 	rec_iface_action_reset(iface);
 }

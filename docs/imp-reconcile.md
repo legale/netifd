@@ -117,6 +117,8 @@ Checks:
 - interface wants to be up but is not `IFS_UP`;
 - interface is `IFS_UP`, but `iface->l3_dev.dev` is missing;
 - interface is `IFS_UP`, but main device exists and its kernel ifindex is gone;
+- enabled interface routes from `config_ip.route` and `proto_ip.route` must
+  exist in the kernel route table;
 - device is claimed by an interface but `dev->present` is false;
 - setup state age is suspiciously high;
 - wireless check may be needed, but no recovery is executed.
